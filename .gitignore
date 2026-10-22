@@ -9,3 +9,32 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local vision debug dumps (camera JPEGs)
+debug_vision_dumps/
+
+# Generated training data (large). Rebuild with rummikub_synth_gen.py.
+tiles_extracted/
+synthetic_dataset/
+merged_for_roboflow/
+datasets/
+runs/
+autolabeled/
+
+# Segment Anything weights downloaded on first extract.
+mobile_sam.pt
+sam_b.pt
+
+# Trained model weights (large binaries – distribute out-of-band).
+classify/
+detect/
+
+# Local datasets, photos, archives, and model weights.
+your_dataset/
+backgrounds/
+*.zip
+*.pt
+
+# Local editor and agent state.
+.cursor/
+.vscode/

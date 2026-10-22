@@ -34,6 +34,15 @@ class SolverConfig {
     return 'http://$host:$port/solve';
   }
 
+  /// Same-origin/backend proxy for Roboflow Workflows (avoids browser CORS).
+  static String get visionUrl {
+    final solve = solveUrl;
+    if (solve.endsWith('/solve')) {
+      return '${solve.substring(0, solve.length - 6)}/vision/workflow';
+    }
+    return '$solve/vision/workflow';
+  }
+
   static bool get _isHostedWeb {
     final host = Uri.base.host;
     return host != 'localhost' &&

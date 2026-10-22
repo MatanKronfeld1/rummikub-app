@@ -2,3 +2,11 @@ fastapi
 uvicorn
 pydantic
 ortools
+pytest
+# Local two-stage pipeline dependencies
+opencv-python-headless
+numpy
+requests
+ultralytics>=8.3
+Pillow
+python-multipart
