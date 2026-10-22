@@ -1,0 +1,53 @@
+{
+  "version": "1.0",
+  "inputs": [
+    {
+      "type": "InferenceImage",
+      "name": "image"
+    }
+  ],
+  "steps": [
+    {
+      "type": "roboflow_core/roboflow_object_detection_model@v1",
+      "name": "tile_detector",
+      "images": "$inputs.image",
+      "model_id": "rummikub-tiles-qu08l/1"
+    },
+    {
+      "type": "roboflow_core/detection_offset@v1",
+      "name": "padded_tiles",
+      "predictions": "$steps.tile_detector.predictions",
+      "offset_width": 10,
+      "offset_height": 10,
+      "units": "Percent (%)"
+    },
+    {
+      "type": "roboflow_core/dynamic_crop@v1",
+      "name": "tile_crops",
+      "images": "$inputs.image",
+      "predictions": "$steps.padded_tiles.predictions"
+    },
+    {
+      "type": "roboflow_core/roboflow_classification_model@v1",
+      "name": "tile_classifier",
+      "images": "$steps.tile_crops.crops",
+      "model_id": "rummikub-tile-cls/1"
+    },
+    {
+      "type": "roboflow_core/detections_classes_replacement@v1",
+      "name": "recognized_tiles",
+      "object_detection_predictions": "$steps.padded_tiles.predictions",
+      "classification_predictions": "$steps.tile_classifier.predictions",
+      "fallback_class_name": "Unknown",
+      "fallback_class_id": 1000
+    }
+  ],
+  "outputs": [
+    {
+      "type": "JsonField",
+      "name": "detections",
+      "coordinates_system": "own",
+      "selector": "$steps.recognized_tiles.predictions"
+    }
+  ]
+}

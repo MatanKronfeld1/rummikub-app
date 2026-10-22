@@ -1,11 +1,15 @@
 import 'package:flutter/foundation.dart';
 import '../logic/set_validator.dart';
 import '../models/models.dart';
+import '../services/roboflow_debug_dump.dart';
 
 /// Provider for managing the game state throughout the app.
 class GameProvider extends ChangeNotifier {
   GameState _gameState = GameState.empty();
   GameState? _visionOutput;
+
+  String? lastVisionDebug;
+  RoboflowDebugDump? lastRoboflowDump;
 
   GameState get gameState => _gameState;
 
@@ -27,19 +31,30 @@ class GameProvider extends ChangeNotifier {
 
   void clearState() {
     _visionOutput = null;
+    lastVisionDebug = null;
+    lastRoboflowDump = null;
     _gameState = GameState.empty();
     notifyListeners();
   }
 
-  void updateGameState(GameState newState, {bool fromVision = false}) {
+  void updateGameState(
+    GameState newState, {
+    bool fromVision = false,
+    String? visionDebug,
+    RoboflowDebugDump? roboflowDump,
+  }) {
     if (fromVision) {
       _visionOutput = SetValidator.classifyGameState(newState);
+      lastVisionDebug = visionDebug;
+      lastRoboflowDump = roboflowDump;
     }
     _commit(newState);
   }
 
   void beginManualEntry() {
     _visionOutput = null;
+    lastVisionDebug = null;
+    lastRoboflowDump = null;
     _commit(GameState.empty());
   }
 

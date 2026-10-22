@@ -1,229 +1,408 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
+import '../config/roboflow_config.dart';
+import '../config/solver_config.dart';
+import '../debug_log.dart';
 import '../models/models.dart';
+import 'roboflow_debug_dump.dart';
+import 'vision_parser.dart';
 
-/// Calls the Roboflow hosted YOLOv8 model and maps detections to a [GameState].
-class VisionService {
-  VisionService({
-    this.apiKey = const String.fromEnvironment('ROBOFLOW_API_KEY'),
-    this.modelId = const String.fromEnvironment(
-      'ROBOFLOW_MODEL_ID',
-      defaultValue: 'rummikub-tiles',
-    ),
-    this.modelVersion = const String.fromEnvironment(
-      'ROBOFLOW_MODEL_VERSION',
-      defaultValue: '1',
-    ),
-  });
+/// User-visible failure from the Roboflow workflow client.
+class VisionException implements Exception {
+  const VisionException(this.message, {this.statusCode});
 
-  final String apiKey;
-  final String modelId;
-  final String modelVersion;
+  final String message;
+  final int? statusCode;
 
-  /// Sends [image] to Roboflow and returns the recognized board and rack.
-  ///
-  /// If the API key is missing or the request fails, returns [_mockGameState]
-  /// so the correction flow can still be exercised.
-  Future<GameState> processImage(XFile image) async {
-    if (apiKey.isEmpty) {
-      return _mockGameState();
-    }
-
-    try {
-      final bytes = await image.readAsBytes();
-      final uri = Uri.parse(
-        'https://detect.roboflow.com/$modelId/$modelVersion?api_key=$apiKey',
-      );
-
-      final response = await http.post(
-        uri,
-        headers: const {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: base64Encode(bytes),
-      );
-
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        return _mockGameState();
-      }
-
-      final decoded = jsonDecode(response.body);
-      if (decoded is! Map<String, dynamic>) {
-        return _mockGameState();
-      }
-
-      final rawPredictions = decoded['predictions'];
-      if (rawPredictions is! List) {
-        return _mockGameState();
-      }
-
-      final detections = rawPredictions
-          .whereType<Map<String, dynamic>>()
-          .map(_Detection.fromJson)
-          .where((detection) => detection != null)
-          .cast<_Detection>()
-          .toList();
-
-      return _gameStateFromDetections(detections);
-    } catch (_) {
-      return _mockGameState();
-    }
-  }
-
-  /// Sample board + rack used when Roboflow is unavailable.
-  GameState _mockGameState() {
-    return GameState(
-      board: [
-        TileSet(
-          type: 'RUN',
-          tiles: [
-            Tile(color: 'RED', value: 7),
-            Tile(color: 'RED', value: 8),
-            Tile(color: 'RED', value: 9),
-          ],
-        ),
-        TileSet(
-          type: 'GROUP',
-          tiles: [
-            Tile(color: 'BLACK', value: 4),
-            Tile(color: 'BLUE', value: 4),
-            Tile(color: 'YELLOW', value: 4),
-          ],
-        ),
-        TileSet(
-          type: 'INVALID',
-          tiles: [
-            Tile(color: 'RED', value: 10),
-            Tile(color: 'RED', value: 11),
-          ],
-        ),
-      ],
-      rack: [
-        Tile(color: 'BLUE', value: 2),
-        Tile(color: 'YELLOW', value: 13),
-        Tile(color: 'BLACK', value: 6),
-        Tile(color: 'JOKER', value: 0),
-      ],
-    );
-  }
-
-  GameState _gameStateFromDetections(List<_Detection> detections) {
-    if (detections.isEmpty) {
-      return GameState.empty();
-    }
-
-    final rows = _clusterRows(detections);
-    if (rows.isEmpty) {
-      return GameState.empty();
-    }
-
-    // Bottom of the photo (largest y) is the player's rack; rows above are sets.
-    final rackTiles = rows.last.map((d) => d.toTile()).toList();
-    final board = rows
-        .take(rows.length - 1)
-        .expand(_splitRowIntoSets)
-        .toList();
-
-    return GameState(board: board, rack: rackTiles);
-  }
-
-  List<List<_Detection>> _clusterRows(List<_Detection> detections) {
-    final sorted = [...detections]..sort((a, b) => a.y.compareTo(b.y));
-    final avgHeight =
-        sorted.fold<double>(0, (sum, d) => sum + d.height) / sorted.length;
-    final threshold = avgHeight * 0.6;
-
-    final rows = <List<_Detection>>[];
-    for (final detection in sorted) {
-      if (rows.isEmpty || (detection.y - rows.last.last.y).abs() > threshold) {
-        rows.add([detection]);
-      } else {
-        rows.last.add(detection);
-      }
-    }
-
-    for (final row in rows) {
-      row.sort((a, b) => a.x.compareTo(b.x));
-    }
-    return rows;
-  }
-
-  Iterable<TileSet> _splitRowIntoSets(List<_Detection> row) {
-    if (row.isEmpty) return const [];
-
-    final avgWidth =
-        row.fold<double>(0, (sum, d) => sum + d.width) / row.length;
-    final gapThreshold = avgWidth * 1.5;
-
-    final groups = <List<_Detection>>[
-      [row.first],
-    ];
-    for (var i = 1; i < row.length; i++) {
-      final gap = row[i].x - row[i - 1].x;
-      if (gap > gapThreshold) {
-        groups.add([row[i]]);
-      } else {
-        groups.last.add(row[i]);
-      }
-    }
-
-    return groups.map(
-      (group) => TileSet(
-        type: 'INVALID',
-        tiles: group.map((d) => d.toTile()).toList(),
-      ),
-    );
-  }
+  @override
+  String toString() => message;
 }
 
-class _Detection {
-  const _Detection({
-    required this.x,
-    required this.y,
-    required this.width,
-    required this.height,
-    required this.color,
-    required this.value,
-  });
+/// Calls the Roboflow Workflow "Rummikub v1 Logic" over REST and maps tiles.
+class VisionService {
+  VisionService({
+    http.Client? httpClient,
+    String? apiKey,
+    String? workflowUrl,
+    String? fallbackUrl,
+    double? confidenceCutoff,
+    this.timeout = const Duration(seconds: 60),
+    this.maxAttempts = 3,
+  })  : _client = httpClient ?? http.Client(),
+        _apiKey = apiKey ?? RoboflowConfig.apiKey,
+        _workflowUrl = workflowUrl ??
+            (kIsWeb ? SolverConfig.visionUrl : RoboflowConfig.runUrl),
+        _fallbackUrl = fallbackUrl ??
+            (kIsWeb ? '' : RoboflowConfig.inferFallbackUrl),
+        _confidenceCutoff =
+            confidenceCutoff ?? RoboflowConfig.confidenceCutoff;
 
-  final double x;
-  final double y;
-  final double width;
-  final double height;
-  final String color;
-  final int value;
+  final http.Client _client;
+  final String _apiKey;
+  final String _workflowUrl;
+  final String _fallbackUrl;
+  final double _confidenceCutoff;
+  final Duration timeout;
+  final int maxAttempts;
 
-  static _Detection? fromJson(Map<String, dynamic> json) {
-    final label = (json['class'] ?? json['class_name'] ?? '').toString();
-    final parsed = _parseLabel(label);
-    if (parsed == null) return null;
+  final List<String> lastSummaries = [];
+  RoboflowDebugDump? lastDump;
 
-    return _Detection(
-      x: (json['x'] as num?)?.toDouble() ?? 0,
-      y: (json['y'] as num?)?.toDouble() ?? 0,
-      width: (json['width'] as num?)?.toDouble() ?? 0,
-      height: (json['height'] as num?)?.toDouble() ?? 0,
-      color: parsed.$1,
-      value: parsed.$2,
+  /// Runs the workflow on [boardImage] and [rackImage], then builds a [GameState].
+  Future<GameState> processBoardAndRack({
+    required XFile boardImage,
+    required XFile rackImage,
+  }) async {
+    return processBoardAndRackFromBytes(
+      boardImage: await boardImage.readAsBytes(),
+      rackImage: await rackImage.readAsBytes(),
     );
   }
 
-  Tile toTile() => Tile(color: color, value: value);
+  Future<GameState> processBoardAndRackFromBytes({
+    required Uint8List boardImage,
+    required Uint8List rackImage,
+  }) async {
+    lastSummaries.clear();
+    final boardRaw = await runWorkflow(boardImage);
+    final rackRaw = await runWorkflow(rackImage);
+    final boardAll = VisionParser.detectionsFromResponse(
+      boardRaw,
+      confidenceCutoff: _confidenceCutoff,
+    );
+    final tableRawCount = VisionParser.lastRawCount;
+    final rackAll = VisionParser.detectionsFromResponse(
+      rackRaw,
+      confidenceCutoff: _confidenceCutoff,
+    );
+    lastDump = RoboflowDebugDump(
+      tableJpeg: Uint8List.fromList(boardImage),
+      rackJpeg: Uint8List.fromList(rackImage),
+      tableJson: workflowJsonForExport(boardRaw),
+      rackJson: workflowJsonForExport(rackRaw),
+      unfilteredSummary:
+          'table raw=$tableRawCount kept=${boardAll.length} ${_fmt(boardAll)} | '
+          'rack raw=${VisionParser.lastRawCount} kept=${rackAll.length} ${_fmt(rackAll)}',
+      tableDetections: boardAll,
+      rackDetections: rackAll,
+    );
+    lastSummaries.addAll([
+      '${boardImage.length}B table raw=${boardAll.length} ${_fmt(boardAll)}',
+      '${rackImage.length}B rack raw=${rackAll.length} ${_fmt(rackAll)}',
+    ]);
+    return VisionParser.gameStateFromPhotos(
+      boardDetections: boardAll,
+      rackDetections: rackAll,
+    );
+  }
 
-  static (String, int)? _parseLabel(String raw) {
-    final label = raw.trim().toUpperCase().replaceAll('-', '_');
-    if (label.isEmpty) return null;
-    if (label.contains('JOKER')) return ('JOKER', 0);
+  static String _fmt(List<TileDetection> detections) {
+    return detections
+        .take(12)
+        .map((d) => '${d.color}${d.value}@${d.confidence.toStringAsFixed(2)}')
+        .toList()
+        .toString();
+  }
 
-    final parts = label.split('_');
-    if (parts.length < 2) return null;
+  /// Detects tiles in a single photo via [runWorkflow].
+  Future<List<TileDetection>> detectTiles(XFile image) async {
+    final bytes = await image.readAsBytes();
+    return detectTilesFromBytes(bytes);
+  }
 
-    final color = parts.first;
-    final value = int.tryParse(parts.last);
-    if (value == null) return null;
-    if (!['RED', 'BLUE', 'BLACK', 'YELLOW'].contains(color)) return null;
-    if (value < 1 || value > 13) return null;
-    return (color, value);
+  Future<List<TileDetection>> detectTilesFromBytes(Uint8List bytes) async {
+    final decoded = await runWorkflow(bytes);
+    try {
+      final detections = VisionParser.detectionsFromResponse(
+        decoded,
+        confidenceCutoff: _confidenceCutoff,
+      );
+      lastSummaries.add(
+        '${bytes.length}B raw=${VisionParser.lastRawCount} '
+        'kept=${detections.length} '
+        '${detections.take(8).map((d) => '${d.color}${d.value}').toList()}',
+      );
+      return detections;
+    } on FormatException catch (error) {
+      lastSummaries.add('${bytes.length}B parse-error: ${error.message}');
+      throw VisionException(error.message);
+    }
+  }
+
+  /// Posts one image to the workflow endpoint with timeout and retries.
+  Future<dynamic> runWorkflow(Uint8List imageBytes) async {
+    if (_apiKey.isEmpty) {
+      throw const VisionException(
+        'Missing Roboflow API key. Run with --dart-define=ROBOFLOW_API_KEY=your_key',
+      );
+    }
+    if (imageBytes.isEmpty) {
+      throw const VisionException('The selected photo could not be read.');
+    }
+    if (imageBytes.length < 8000) {
+      throw const VisionException(
+        'That photo was empty or too small to recognize. Try again, or pick from the gallery.',
+      );
+    }
+
+    // #region agent log
+    final inspectLimit =
+        imageBytes.length < 65536 ? imageBytes.length : 65536;
+    var hasExifAscii = false;
+    for (var i = 0; i < inspectLimit - 4; i++) {
+      if (imageBytes[i] == 0x45 &&
+          imageBytes[i + 1] == 0x78 &&
+          imageBytes[i + 2] == 0x69 &&
+          imageBytes[i + 3] == 0x66) {
+        hasExifAscii = true;
+        break;
+      }
+    }
+    debugLog(
+      location: 'vision_service.dart:runWorkflow',
+      message: 'image bytes before encode',
+      hypothesisId: 'H1',
+      data: {
+        'byteLen': imageBytes.length,
+        'isJpeg': imageBytes.length >= 2 &&
+            imageBytes[0] == 0xFF &&
+            imageBytes[1] == 0xD8,
+        'hasExifAscii': hasExifAscii,
+        'magic': imageBytes
+            .take(4)
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join(),
+        'cutoff': _confidenceCutoff,
+        'viaProxy': kIsWeb,
+      },
+    );
+    // #endregion
+
+    final payload = jsonEncode({
+      'api_key': _apiKey,
+      'inputs': {
+        RoboflowConfig.imageInputName: {
+          'type': 'base64',
+          'value': base64Encode(imageBytes),
+        },
+      },
+    });
+
+    http.Response? lastResponse;
+    Object? lastError;
+    var url = _workflowUrl;
+    var triedFallback = false;
+    // #region agent log
+    debugLog(
+      location: 'vision_service.dart:runWorkflow',
+      message: 'workflow request start',
+      hypothesisId: 'H5',
+      data: {
+        'urlHost': Uri.parse(url).host,
+        'urlPath': Uri.parse(url).path,
+        'viaProxy': kIsWeb,
+      },
+    );
+    // #endregion
+
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        final response = await _client
+            .post(
+              Uri.parse(url),
+              headers: const {'Content-Type': 'application/json'},
+              body: payload,
+            )
+            .timeout(timeout);
+        lastResponse = response;
+        // #region agent log
+        debugLog(
+          location: 'vision_service.dart:runWorkflow',
+          message: 'workflow HTTP response',
+          hypothesisId: 'H5',
+          data: {
+            'status': response.statusCode,
+            'urlHost': Uri.parse(url).host,
+            'urlPath': Uri.parse(url).path,
+            'viaProxy': kIsWeb,
+            'bodyChars': response.body.length,
+            'attempt': attempt,
+          },
+        );
+        // #endregion
+
+        if (response.statusCode == 404 &&
+            !triedFallback &&
+            _fallbackUrl.isNotEmpty &&
+            _fallbackUrl != url) {
+          url = _fallbackUrl;
+          triedFallback = true;
+          continue;
+        }
+
+        if (_shouldRetryStatus(response.statusCode) &&
+            attempt < maxAttempts - 1) {
+          await Future<void>.delayed(_backoff(attempt));
+          continue;
+        }
+
+        return _decodeSuccess(response);
+      } on VisionException {
+        rethrow;
+      } on TimeoutException catch (error) {
+        lastError = error;
+        // #region agent log
+        debugLog(
+          location: 'vision_service.dart:runWorkflow',
+          message: 'workflow timeout',
+          hypothesisId: 'H4',
+          data: {'attempt': attempt, 'error': error.toString()},
+        );
+        // #endregion
+        if (attempt >= maxAttempts - 1) break;
+        await Future<void>.delayed(_backoff(attempt));
+      } on http.ClientException catch (error) {
+        lastError = error;
+        // #region agent log
+        debugLog(
+          location: 'vision_service.dart:runWorkflow',
+          message: 'workflow client exception',
+          hypothesisId: 'H5',
+          data: {'attempt': attempt, 'error': error.toString()},
+        );
+        // #endregion
+        if (attempt >= maxAttempts - 1) break;
+        await Future<void>.delayed(_backoff(attempt));
+      } catch (error) {
+        lastError = error;
+        // #region agent log
+        debugLog(
+          location: 'vision_service.dart:runWorkflow',
+          message: 'workflow unexpected exception',
+          hypothesisId: 'H5',
+          data: {
+            'attempt': attempt,
+            'type': error.runtimeType.toString(),
+            'error': error.toString(),
+          },
+        );
+        // #endregion
+        if (attempt >= maxAttempts - 1) break;
+        await Future<void>.delayed(_backoff(attempt));
+      }
+    }
+
+    if (lastResponse != null) {
+      throw _exceptionForResponse(lastResponse);
+    }
+    if (lastError is TimeoutException) {
+      throw const VisionException(
+        'Roboflow timed out. Try a smaller photo or try again.',
+      );
+    }
+    throw VisionException(
+      kIsWeb
+          ? 'Could not reach the vision backend. Start the Python API on port 8000 and try again.'
+          : 'Could not reach Roboflow. Check your internet connection.',
+    );
+  }
+
+  dynamic _decodeSuccess(http.Response response) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw _exceptionForResponse(response);
+    }
+    if (_isHtmlResponse(response)) {
+      throw const VisionException(
+        'Vision proxy is not available on this host. Deploy the backend and try again.',
+        statusCode: 200,
+      );
+    }
+    if (response.body.isEmpty) {
+      throw const VisionException('Roboflow returned an empty response.');
+    }
+    try {
+      return jsonDecode(response.body);
+    } on FormatException {
+      throw const VisionException(
+        'Roboflow returned a response that is not valid JSON.',
+      );
+    }
+  }
+
+  VisionException _exceptionForResponse(http.Response response) {
+    final detail = _shortErrorMessage(response.body);
+    switch (response.statusCode) {
+      case 401:
+      case 403:
+        return VisionException(
+          'Roboflow rejected the API key. Check ROBOFLOW_API_KEY.',
+          statusCode: response.statusCode,
+        );
+      case 404:
+        return VisionException(
+          'Roboflow workflow not found (${RoboflowConfig.workspace}/'
+          '${RoboflowConfig.workflowId}).',
+          statusCode: 404,
+        );
+      case 413:
+        return const VisionException(
+          'Photo is too large for Roboflow. Try a closer shot or a smaller image.',
+          statusCode: 413,
+        );
+      case 429:
+        return const VisionException(
+          'Too many Roboflow requests. Try again in a moment.',
+          statusCode: 429,
+        );
+      default:
+        if (response.statusCode == 200 && _isHtmlResponse(response)) {
+          return const VisionException(
+            'Vision proxy is not available on this host. Deploy the backend and try again.',
+            statusCode: 200,
+          );
+        }
+        return VisionException(
+          detail ?? 'Roboflow request failed (${response.statusCode}).',
+          statusCode: response.statusCode,
+        );
+    }
+  }
+
+  static bool _isHtmlResponse(http.Response response) {
+    final contentType = response.headers['content-type'] ?? '';
+    if (contentType.contains('text/html')) return true;
+    final trimmed = response.body.trimLeft().toLowerCase();
+    return trimmed.startsWith('<!doctype html') || trimmed.startsWith('<html');
+  }
+
+  static bool _shouldRetryStatus(int statusCode) {
+    return statusCode == 408 ||
+        statusCode == 429 ||
+        statusCode >= 500;
+  }
+
+  static Duration _backoff(int attempt) {
+    return Duration(milliseconds: 400 * (1 << attempt));
+  }
+
+  static String? _shortErrorMessage(String body) {
+    if (body.isEmpty || body.length > 8000) return null;
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) return null;
+      for (final key in ['error', 'message', 'detail']) {
+        final value = decoded[key];
+        if (value is String && value.isNotEmpty && value.length < 400) {
+          return value;
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 }
