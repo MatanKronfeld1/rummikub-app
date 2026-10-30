@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
-import '../debug_log.dart';
+import '../logic/set_validator.dart';
 import '../models/models.dart';
 
 /// One tile box from a Roboflow workflow output, after label mapping.
@@ -83,26 +83,6 @@ class VisionParser {
     double confidenceCutoff = defaultConfidenceCutoff,
   }) {
     final entries = _outputEntries(decoded);
-    // #region agent log
-    debugLog(
-      location: 'vision_parser.dart:detectionsFromResponse',
-      message: 'parser input shape',
-      hypothesisId: 'H5',
-      data: {
-        'decodedType': decoded.runtimeType.toString(),
-        'topKeys': decoded is Map
-            ? decoded.keys.map((k) => k.toString()).take(12).toList()
-            : const <String>[],
-        'entryCount': entries.length,
-        'entryKeys': entries
-            .expand((e) => e.keys)
-            .map((k) => k.toString())
-            .toSet()
-            .take(20)
-            .toList(),
-      },
-    );
-    // #endregion
     if (entries.isEmpty) {
       throw const FormatException(
         'Roboflow returned no workflow outputs to parse.',
@@ -134,27 +114,7 @@ class VisionParser {
       }
     }
 
-    // #region agent log
-    debugLog(
-      location: 'vision_parser.dart:detectionsFromResponse',
-      message: 'selected prediction list',
-      hypothesisId: 'H19',
-      data: {
-        'bestLen': best?.length ?? 0,
-        'bestScore': bestScore,
-      },
-    );
-    // #endregion
-
     if (!foundPredictionList || best == null) {
-      // #region agent log
-      debugLog(
-        location: 'vision_parser.dart:detectionsFromResponse',
-        message: 'no prediction list found',
-        hypothesisId: 'H5',
-        data: {'entryCount': entries.length},
-      );
-      // #endregion
       throw const FormatException(
         'Roboflow workflow returned no tile detections. Check the workflow outputs.',
       );
@@ -163,13 +123,7 @@ class VisionParser {
     final detections = <TileDetection>[];
     var recognized = 0;
     String? sampleUnknown;
-    final unknownLabels = <String>[];
     final sampleLabels = <String>[];
-    var below015 = 0;
-    var between015and04 = 0;
-    var atOrAbove04 = 0;
-    double? confMin;
-    double? confMax;
     for (final raw in best) {
       final label =
           (raw['class'] ?? raw['class_name'] ?? raw['className'] ?? '')
@@ -182,22 +136,10 @@ class VisionParser {
           (raw['confidence_score'] as num?)?.toDouble() ??
           1.0;
       if (confidence > 1.0) confidence /= 100.0;
-      confMin = confMin == null ? confidence : (confidence < confMin ? confidence : confMin);
-      confMax = confMax == null ? confidence : (confidence > confMax ? confidence : confMax);
-      if (confidence < 0.15) {
-        below015 += 1;
-      } else if (confidence < 0.4) {
-        between015and04 += 1;
-      } else {
-        atOrAbove04 += 1;
-      }
 
       var parsed = parseLabel(label);
       if (parsed == null) {
-        if (label.isNotEmpty) {
-          sampleUnknown ??= label;
-          if (unknownLabels.length < 8) unknownLabels.add(label);
-        }
+        if (label.isNotEmpty) sampleUnknown ??= label;
         // The Roboflow Workflow labels boxes the classifier could not confirm as
         // "Unknown". Never turn those into a Joker: a wrong wild tile silently
         // changes the solver's answer, whereas a missing tile is visible and
@@ -224,33 +166,14 @@ class VisionParser {
       );
     }
 
-    // #region agent log
-    debugLog(
-      location: 'vision_parser.dart:detectionsFromResponse',
-      message: 'parsed detections',
-      hypothesisId: 'H3',
-      data: {
-        'rawCount': best.length,
-        'recognized': recognized,
-        'kept': detections.length,
-        'cutoff': confidenceCutoff,
-        'confMin': confMin,
-        'confMax': confMax,
-        'below015': below015,
-        'between015and04': between015and04,
-        'atOrAbove04': atOrAbove04,
-        'sampleUnknown': sampleUnknown,
-        'unknownLabels': unknownLabels,
-        'sampleLabels': sampleLabels,
-      },
-    );
-    // #endregion
     lastRawCount = best.length;
     lastRecognized = recognized;
     lastKept = detections.length;
     lastSampleLabels = List<String>.from(sampleLabels);
-    debugPrint('Raw detections: ${best.length}');
-    debugPrint('After filtering: ${detections.length}');
+    if (kDebugMode) {
+      debugPrint('Raw detections: ${best.length}');
+      debugPrint('After filtering: ${detections.length}');
+    }
     if (best.isNotEmpty && recognized == 0 && !passThroughRawDetections) {
       final sample = sampleUnknown ?? 'unknown';
       throw FormatException(
@@ -377,8 +300,8 @@ class VisionParser {
 
   static bool _looksLikeDetection(Map<String, dynamic> map) {
     final label = map['class'] ?? map['class_name'] ?? map['className'];
-    final hasLabel = (label is String && label.isNotEmpty) ||
-        map['class_id'] != null;
+    final hasLabel =
+        (label is String && label.isNotEmpty) || map['class_id'] != null;
     return hasLabel && map['x'] is num && map['y'] is num;
   }
 
@@ -400,7 +323,8 @@ class VisionParser {
   }
 
   /// Row-based clustering; used for rack photos (upright, horizontal rows).
-  static List<List<TileDetection>> _clusterRows(List<TileDetection> detections) {
+  static List<List<TileDetection>> _clusterRows(
+      List<TileDetection> detections) {
     final sorted = [...detections]..sort((a, b) => a.y.compareTo(b.y));
     final avgHeight =
         sorted.fold<double>(0, (sum, d) => sum + d.height) / sorted.length;
@@ -424,13 +348,23 @@ class VisionParser {
   // Rotation-aware board grouping.
   //
   // Mirrors project_rummikub_backend/vision_grouping.py (_group_board) and uses
-  // the same thresholds: boxes are linked when their pairwise gap is below a
-  // data-driven threshold, components with several parallel lines are split
-  // along the perpendicular axis, and every meld is ordered along its principal
-  // axis so melds lying at any angle (even upside down) read in ascending order.
+  // the same thresholds: tiles are linked when their centers are at most about
+  // one tile pitch apart (the median nearest-neighbour center distance, which
+  // does not depend on rotation or box padding), components with several
+  // parallel lines are split along the perpendicular axis, and every meld is
+  // ordered along its principal axis so melds lying at any angle (even upside
+  // down) read in ascending order. Two rule-based guardrails follow: an invalid
+  // line that cuts into valid sets is cut, and end-to-end fragments whose
+  // union is a valid set are rejoined.
   // ---------------------------------------------------------------------
 
-  static const double _meldGapWidthRatio = 0.25;
+  /// Link tolerance above the pitch: 3 * MAD of the nearest-neighbour center
+  /// distances, clamped to this range. Stacked rows sit ~1.5 pitches apart.
+  static const double _pitchTolerance = 0.15;
+  static const double _maxPitchTolerance = 0.30;
+
+  /// Fragments whose facing ends are this many pitches apart may be rejoined.
+  static const double _rejoinRatio = 1.6;
   static const double _meldSpreadRatio = 0.6;
   static const double _meldClusterRatio = 0.5;
 
@@ -449,14 +383,15 @@ class VisionParser {
     return (sorted[mid - 1] + sorted[mid]) / 2;
   }
 
-  /// Euclidean distance between two axis-aligned boxes (0 when they touch).
-  static double _boxGap(TileDetection a, TileDetection b) {
-    final dx = math.max(0.0, (a.x - b.x).abs() - (a.width + b.width) / 2);
-    final dy = math.max(0.0, (a.y - b.y).abs() - (a.height + b.height) / 2);
+  /// Distance between two box centers.
+  static double _centerDist(TileDetection a, TileDetection b) {
+    final dx = a.x - b.x;
+    final dy = a.y - b.y;
     return math.sqrt(dx * dx + dy * dy);
   }
 
-  /// Connected components (as index lists) of boxes with gap <= [threshold].
+  /// Connected components (as index lists) of boxes whose centers are at most
+  /// [threshold] apart.
   static List<List<int>> _linkComponents(
     List<int> items,
     List<TileDetection> all,
@@ -473,7 +408,7 @@ class VisionParser {
 
     for (var i = 0; i < items.length; i++) {
       for (var j = i + 1; j < items.length; j++) {
-        if (_boxGap(all[items[i]], all[items[j]]) <= threshold) {
+        if (_centerDist(all[items[i]], all[items[j]]) <= threshold) {
           parent[find(j)] = find(i);
         }
       }
@@ -552,8 +487,7 @@ class VisionParser {
     cy /= items.length;
 
     final keyed = [
-      for (final i in items)
-        (-ay * (all[i].x - cx) + ax * (all[i].y - cy), i),
+      for (final i in items) (-ay * (all[i].x - cx) + ax * (all[i].y - cy), i),
     ]..sort((a, b) {
         final byOffset = a.$1.compareTo(b.$1);
         return byOffset != 0 ? byOffset : a.$2.compareTo(b.$2);
@@ -607,6 +541,85 @@ class VisionParser {
     return descending > ascending ? ordered.reversed.toList() : ordered;
   }
 
+  /// Cuts an axis-ordered line wherever neighbouring centers are farther apart
+  /// than [threshold] (local gap peaks; also breaks L-shaped chains).
+  static List<List<int>> _splitAtGapPeaks(
+    List<int> ordered,
+    List<TileDetection> all,
+    double threshold,
+  ) {
+    if (ordered.isEmpty || threshold <= 0) return [ordered];
+    final pieces = <List<int>>[
+      [ordered.first],
+    ];
+    for (var k = 1; k < ordered.length; k++) {
+      if (_centerDist(all[ordered[k - 1]], all[ordered[k]]) > threshold) {
+        pieces.add([]);
+      }
+      pieces.last.add(ordered[k]);
+    }
+    return pieces;
+  }
+
+  static bool _isValidMeld(List<int> items, List<TileDetection> all) {
+    final tiles = [for (final i in items) all[i].toTile()];
+    return SetValidator.setTilesAreValid(tiles) ||
+        SetValidator.setTilesAreValid(tiles.reversed.toList());
+  }
+
+  /// Guardrail: an invalid line that cuts into valid sets is cut there (a run
+  /// and a group touching on one line).
+  static List<List<int>> _splitIntoValidSets(
+    List<int> line,
+    List<TileDetection> all,
+  ) {
+    if (line.length < 2 * SetValidator.minSetSize || _isValidMeld(line, all)) {
+      return [line];
+    }
+    final pieces = SetValidator.splitIntoValidSets(
+      [for (final i in line) all[i].toTile()],
+    );
+    if (pieces == null) return [line];
+    final out = <List<int>>[];
+    var start = 0;
+    for (final piece in pieces) {
+      out.add(line.sublist(start, start + piece.length));
+      start += piece.length;
+    }
+    return out;
+  }
+
+  /// Guardrail: rejoins end-to-end fragments when only their union is a valid
+  /// set (a sloppy gap inside a real meld). Edits [parts] in place.
+  static void _rejoinFragments(
+    List<List<int>> parts,
+    List<TileDetection> all,
+    double reach,
+  ) {
+    var merged = true;
+    while (merged) {
+      merged = false;
+      outer:
+      for (var a = 0; a < parts.length; a++) {
+        for (var b = 0; b < parts.length; b++) {
+          if (a == b) continue;
+          if (_centerDist(all[parts[a].last], all[parts[b].first]) > reach) {
+            continue;
+          }
+          if (_isValidMeld(parts[a], all) && _isValidMeld(parts[b], all)) {
+            continue;
+          }
+          final union = _orderAlongAxis([...parts[a], ...parts[b]], all);
+          if (!_isValidMeld(union, all)) continue;
+          parts[a] = union;
+          parts.removeAt(b);
+          merged = true;
+          break outer;
+        }
+      }
+    }
+  }
+
   /// Groups board detections into meld candidates at any rotation.
   static List<List<TileDetection>> _groupBoard(List<TileDetection> detections) {
     final usable = [
@@ -623,6 +636,7 @@ class VisionParser {
 
     List<List<int>> components;
     var tileLong = 0.0;
+    var pitch = 0.0;
     var linkThreshold = 0.0;
     if (usable.length == 1) {
       components = [usable];
@@ -639,40 +653,54 @@ class VisionParser {
         for (final i in usable)
           usable
               .where((j) => j != i)
-              .map((j) => _boxGap(detections[i], detections[j]))
+              .map((j) => _centerDist(detections[i], detections[j]))
               .reduce(math.min),
       ];
-      final typical = _median(nearest);
-      final mad = _median([for (final g in nearest) (g - typical).abs()]);
-      linkThreshold = typical + math.max(_meldGapWidthRatio * tileShort, 3 * mad);
+      // The floor guards against duplicate boxes sharing one center.
+      pitch = math.max(_median(nearest), 0.5 * tileShort);
+      final mad = _median([for (final d in nearest) (d - pitch).abs()]);
+      final tolerance =
+          (3 * mad / pitch).clamp(_pitchTolerance, _maxPitchTolerance);
+      linkThreshold = pitch * (1 + tolerance);
       components = _linkComponents(usable, detections, linkThreshold);
     }
 
-    // (centroid y, centroid x, ordered member indices)
-    final entries = <(double, double, List<int>)>[];
+    // Axis-ordered member indices of every meld candidate.
+    final parts = <List<int>>[];
     for (final component in components) {
       final clusters = component.length >= 3
           ? _perpendicularClusters(component, detections, tileLong)
           : [component];
-      final parts = clusters.length == 1
+      final lines = clusters.length == 1
           ? [component]
           : [
               for (final cluster in clusters)
                 ..._linkComponents(cluster, detections, linkThreshold),
             ];
-      for (final part in parts) {
-        var cx = 0.0;
-        var cy = 0.0;
-        for (final i in part) {
-          cx += detections[i].x;
-          cy += detections[i].y;
+      for (final line in lines) {
+        final ordered = _orderAlongAxis(line, detections);
+        for (final piece
+            in _splitAtGapPeaks(ordered, detections, linkThreshold)) {
+          parts.addAll(_splitIntoValidSets(piece, detections));
         }
-        entries.add((
-          cy / part.length,
-          cx / part.length,
-          _orderAlongAxis(part, detections),
-        ));
       }
+    }
+    if (pitch > 0) _rejoinFragments(parts, detections, _rejoinRatio * pitch);
+
+    // (centroid y, centroid x, ordered member indices)
+    final entries = <(double, double, List<int>)>[];
+    for (final part in parts) {
+      var cx = 0.0;
+      var cy = 0.0;
+      for (final i in part) {
+        cx += detections[i].x;
+        cy += detections[i].y;
+      }
+      entries.add((
+        cy / part.length,
+        cx / part.length,
+        _orderAlongAxis(part, detections),
+      ));
     }
 
     // Deterministic output order: centroid (y, x).
@@ -684,8 +712,7 @@ class VisionParser {
       return byX != 0 ? byX : a.$1.compareTo(b.$1);
     });
     return [
-      for (final entry in indexed)
-        [for (final i in entry.$2.$3) detections[i]],
+      for (final entry in indexed) [for (final i in entry.$2.$3) detections[i]],
       ...unusable,
     ];
   }

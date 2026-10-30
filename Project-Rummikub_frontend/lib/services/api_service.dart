@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -6,9 +7,34 @@ import '../config/solver_config.dart';
 import '../models/json_map.dart';
 import '../models/models.dart';
 
+/// User-visible failure from the solver backend.
+class SolverException implements Exception {
+  const SolverException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// HTTP client for the Python solver backend.
 class ApiService {
-  static const _genericError = 'Failed to solve the board. Please try again.';
+  ApiService({
+    http.Client? client,
+    String? solveUrl,
+    this.timeout = const Duration(seconds: 30),
+  })  : _client = client ?? http.Client(),
+        _solveUrl = solveUrl ?? SolverConfig.solveUrl;
+
+  final http.Client _client;
+  final String _solveUrl;
+
+  /// The solver itself stops after 5 seconds; the rest covers the network and
+  /// a cold Cloud Run start.
+  final Duration timeout;
+
+  static const _genericError =
+      'The solver could not solve this board. Please try again.';
 
   /// Posts [currentState] to `/solve`.
   ///
@@ -18,28 +44,43 @@ class ApiService {
   Future<SolveResult> solveBoard(GameState currentState) async {
     final http.Response response;
     try {
-      response = await http.post(
-        Uri.parse(SolverConfig.solveUrl),
-        headers: const {'Content-Type': 'application/json'},
-        body: jsonEncode(currentState.toJson()),
+      response = await _client
+          .post(
+            Uri.parse(_solveUrl),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode(currentState.toJson()),
+          )
+          .timeout(timeout);
+    } on TimeoutException {
+      throw SolverException(
+        'The solver did not answer within ${timeout.inSeconds} seconds. '
+        'Check that the backend is running and try again.',
       );
     } catch (_) {
-      throw Exception(_genericError);
+      throw SolverException(
+        'Could not reach the solver at ${Uri.parse(_solveUrl).host}. '
+        'Check that the backend is running and try again.',
+      );
     }
 
-    if (response.statusCode == 200) {
-      try {
-        return _parseSolveResult(response.body, currentState);
-      } catch (_) {
-        throw Exception(_genericError);
-      }
+    switch (response.statusCode) {
+      case 200:
+        try {
+          return _parseSolveResult(response.body, currentState);
+        } catch (_) {
+          throw const SolverException(
+            'The solver sent an answer the app cannot read. Please try again.',
+          );
+        }
+      case 400:
+        throw SolverException(_detailFromBody(response.body));
+      case 422:
+        throw const SolverException(
+          'The board could not be sent to the solver: some tile data is invalid.',
+        );
+      default:
+        throw const SolverException(_genericError);
     }
-
-    if (response.statusCode == 400) {
-      throw Exception(_detailFromBody(response.body));
-    }
-
-    throw Exception(_genericError);
   }
 
   SolveResult _parseSolveResult(String body, GameState currentState) {
@@ -52,7 +93,7 @@ class ApiService {
 
     final optimal = decoded['optimal_state'];
     if (optimal is! Map) {
-      throw Exception(_genericError);
+      throw const FormatException('optimal_state is missing');
     }
     final optimalMap = asStringKeyedMap(optimal);
 
@@ -65,8 +106,8 @@ class ApiService {
     return SolveResult(
       originalState: original,
       optimalState: optimalState,
-      tilesUsedFromRack: (optimalMap['tiles_used_from_rack'] as num?)?.toInt() ??
-          0,
+      tilesUsedFromRack:
+          (optimalMap['tiles_used_from_rack'] as num?)?.toInt() ?? 0,
       isValid: decoded['is_valid'] == true,
       executionTimeMs: (decoded['execution_time_ms'] as num?)?.toInt() ?? 0,
     );

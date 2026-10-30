@@ -26,6 +26,14 @@ class _AccountScreenState extends State<AccountScreen> {
     await future;
   }
 
+  /// This screen is pushed over the main screen. Signing out swaps the
+  /// navigator's home for the login page, so pop back to it first or this page
+  /// would stay on top of the login.
+  Future<void> _signOut() async {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    await FirebaseAuth.instance.signOut();
+  }
+
   Future<void> _editDisplayName(UserProfile profile) async {
     final controller = TextEditingController(text: profile.displayName);
     final saved = await showDialog<bool>(
@@ -117,15 +125,14 @@ class _AccountScreenState extends State<AccountScreen> {
               ],
               const SizedBox(height: 24),
               OutlinedButton.icon(
-                onPressed: profile == null
-                    ? null
-                    : () => _editDisplayName(profile),
+                onPressed:
+                    profile == null ? null : () => _editDisplayName(profile),
                 icon: const Icon(Icons.edit),
                 label: const Text('Edit display name'),
               ),
               const SizedBox(height: 12),
               FilledButton.icon(
-                onPressed: () => FirebaseAuth.instance.signOut(),
+                onPressed: _signOut,
                 icon: const Icon(Icons.logout),
                 label: const Text('Sign out'),
               ),

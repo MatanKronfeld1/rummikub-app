@@ -73,6 +73,7 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
             beforeState: result.originalState,
             afterState: result.optimalState,
             tilesDropped: result.tilesUsedFromRack,
+            executionTimeMs: result.executionTimeMs,
           ),
         ),
       );
@@ -236,7 +237,7 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
                 : 'Raw detections with no series grouping. Tap a tile to select it, then tap it again to edit.')
             : (_hasSelection
                 ? 'Tap + to the left or right of any tile to place it, or tap it again to edit.'
-                : 'Tap a tile to select it, then tap + on either side of a tile to place it.');
+                : 'Tap a tile to select it, then tap + on either side of a tile to place it. Tap ✂ between tiles to split a red set.');
 
         return Stack(
           children: [
@@ -374,6 +375,19 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
                                     ),
                                   )
                               : null,
+                          onSplitAt: !_hasSelection &&
+                                  set.isInvalid &&
+                                  set.tiles.length > 1
+                              ? (index) => gameProvider.splitSet(set.id, index)
+                              : null,
+                          onAutoSplit: !_hasSelection &&
+                                  set.isInvalid &&
+                                  (SetValidator.splitIntoValidSets(set.tiles)
+                                              ?.length ??
+                                          0) >
+                                      1
+                              ? () => gameProvider.autoSplitSet(set.id)
+                              : null,
                         );
                       }),
                     const SizedBox(height: 8),
@@ -442,8 +456,8 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
         for (final entry in tiles)
           TileView(
             tile: entry.$1,
-            selected: entry.$1.id == _selectedTileId &&
-                _selectedSetId == entry.$2,
+            selected:
+                entry.$1.id == _selectedTileId && _selectedSetId == entry.$2,
             onTap: () => _onTileTap(entry.$1, setId: entry.$2),
           ),
         if (extra != null) extra,

@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -457,6 +459,50 @@ void main() {
       expect(labels(sets[0]), ['RED1', 'RED2', 'RED3']);
       expect(labels(sets[1]), ['BLUE8', 'BLACK8', 'YELLOW8']);
     });
+  });
+
+  // Shared with the backend's tests/test_vision_grouping.py.
+  group('VisionParser.boardSetsFromDetections (shared fixture)', () {
+    const casesPath =
+        '../project_rummikub_backend/tests/fixtures/board_grouping_cases.json';
+    final cases = (jsonDecode(File(casesPath).readAsStringSync())
+        as Map<String, dynamic>)['cases'] as List<dynamic>;
+
+    String label(String raw) {
+      final (color, value) = VisionParser.parseLabel(raw)!;
+      return '$color$value';
+    }
+
+    List<List<String>> sortedGroups(Iterable<Iterable<String>> groups) =>
+        [for (final g in groups) g.toList()..sort()]
+          ..sort((a, b) => a.join(',').compareTo(b.join(',')));
+
+    for (final raw in cases) {
+      final c = raw as Map<String, dynamic>;
+      test(c['name'] as String, () {
+        final detections = [
+          for (final d in c['detections'] as List<dynamic>)
+            TileDetection(
+              x: (d['x'] as num).toDouble(),
+              y: (d['y'] as num).toDouble(),
+              width: (d['width'] as num).toDouble(),
+              height: (d['height'] as num).toDouble(),
+              confidence: 0.9,
+              color: VisionParser.parseLabel(d['class'] as String)!.$1,
+              value: VisionParser.parseLabel(d['class'] as String)!.$2,
+            ),
+        ];
+        final sets = VisionParser.boardSetsFromDetections(detections);
+
+        expect(
+          sortedGroups(sets.map((s) => s.tiles.map((t) => '${t.color}${t.value}'))),
+          sortedGroups([
+            for (final g in c['expected_groups'] as List<dynamic>)
+              [for (final name in g as List<dynamic>) label(name as String)],
+          ]),
+        );
+      });
+    }
   });
 }
 

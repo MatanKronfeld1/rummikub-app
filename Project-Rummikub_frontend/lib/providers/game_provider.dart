@@ -87,6 +87,37 @@ class GameProvider extends ChangeNotifier {
     _commit(_gameState.updateSetOnBoard(setId, updatedSet));
   }
 
+  /// Replaces set [setId] with [replacement], in place on the board.
+  void _spliceSet(String setId, List<TileSet> replacement) {
+    _commit(_gameState.copyWith(board: [
+      for (final set in _gameState.board)
+        if (set.id == setId) ...replacement else set,
+    ]));
+  }
+
+  /// Cuts set [setId] before tile [index]; the tail becomes the next set.
+  void splitSet(String setId, int index) {
+    final set = _gameState.board.firstWhere((s) => s.id == setId);
+    if (index <= 0 || index >= set.tiles.length) return;
+    _spliceSet(setId, [
+      set.copyWith(tiles: set.tiles.sublist(0, index)),
+      TileSet(type: 'INVALID', tiles: set.tiles.sublist(index)),
+    ]);
+  }
+
+  /// Replaces [setId] with the valid sets it cuts into; false if none exist.
+  bool autoSplitSet(String setId) {
+    final set = _gameState.board.firstWhere((s) => s.id == setId);
+    final pieces = SetValidator.splitIntoValidSets(set.tiles);
+    if (pieces == null || pieces.length < 2) return false;
+    _spliceSet(setId, [
+      set.copyWith(tiles: pieces.first),
+      for (final piece in pieces.skip(1))
+        TileSet(type: 'INVALID', tiles: piece),
+    ]);
+    return true;
+  }
+
   /// Replaces [original] with [updated] on the rack or in [setId].
   void replaceTile(Tile original, Tile updated, {String? setId}) {
     if (setId == null) {
@@ -135,7 +166,10 @@ class GameProvider extends ChangeNotifier {
       case TileDestKind.rack:
         rack = [...rack, tile];
       case TileDestKind.newSet:
-        board = [...board, TileSet(type: 'INVALID', tiles: [tile])];
+        board = [
+          ...board,
+          TileSet(type: 'INVALID', tiles: [tile])
+        ];
       case TileDestKind.insertIntoSet:
         board = _insertIntoSet(
           board: board,

@@ -58,11 +58,17 @@ class UserProfile {
 /// Firestore client aligned with architecture collections.
 class FirebaseService {
   FirebaseService({FirebaseFirestore? firestore, FirebaseAuth? auth})
-      : _firestore = firestore ?? FirebaseFirestore.instance,
-        _auth = auth ?? FirebaseAuth.instance;
+      : _firestoreOverride = firestore,
+        _authOverride = auth;
 
-  final FirebaseFirestore _firestore;
-  final FirebaseAuth _auth;
+  // Resolved on first use, so building a screen that holds a FirebaseService
+  // never touches Firebase (and widget tests can run without it).
+  final FirebaseFirestore? _firestoreOverride;
+  final FirebaseAuth? _authOverride;
+
+  FirebaseFirestore get _firestore =>
+      _firestoreOverride ?? FirebaseFirestore.instance;
+  FirebaseAuth get _auth => _authOverride ?? FirebaseAuth.instance;
 
   User get _requireUser {
     final user = _auth.currentUser;
@@ -104,7 +110,8 @@ class FirebaseService {
     final data = snapshot.data() ?? {};
     return UserProfile(
       uid: user.uid,
-      displayName: (data['display_name'] as String?) ?? _defaultDisplayName(user),
+      displayName:
+          (data['display_name'] as String?) ?? _defaultDisplayName(user),
       totalTilesDropped: (data['total_tiles_dropped'] as num?)?.toInt() ?? 0,
     );
   }
@@ -292,7 +299,8 @@ class FirebaseService {
     return games.take(limit).toList();
   }
 
-  GameHistoryEntry _historyFromDoc(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+  GameHistoryEntry _historyFromDoc(
+      QueryDocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data();
     final timestamp = data['timestamp'];
     return GameHistoryEntry(

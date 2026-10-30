@@ -1,0 +1,30 @@
+{
+  "_comment": "Shared by tests/test_validator.py and the Flutter test/validator_parity_test.dart. Tiles are written COLORvalue (RED7) or JOKER. 'valid_as' is the verdict when the set is declared with that type; 'classify' is the type the tiles alone get (RUN preferred when both fit).",
+  "cases": [
+    {"name": "run of three", "tiles": ["RED1", "RED2", "RED3"], "valid_as": {"RUN": true, "GROUP": false, "INVALID": true}, "classify": "RUN"},
+    {"name": "run 11-13", "tiles": ["YELLOW11", "YELLOW12", "YELLOW13"], "valid_as": {"RUN": true, "GROUP": false, "INVALID": true}, "classify": "RUN"},
+    {"name": "full run 1-13", "tiles": ["BLUE1", "BLUE2", "BLUE3", "BLUE4", "BLUE5", "BLUE6", "BLUE7", "BLUE8", "BLUE9", "BLUE10", "BLUE11", "BLUE12", "BLUE13"], "valid_as": {"RUN": true, "GROUP": false, "INVALID": true}, "classify": "RUN"},
+    {"name": "fourteen tiles cannot be a run", "tiles": ["BLUE1", "BLUE2", "BLUE3", "BLUE4", "BLUE5", "BLUE6", "BLUE7", "BLUE8", "BLUE9", "BLUE10", "BLUE11", "BLUE12", "BLUE13", "JOKER"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "group of three", "tiles": ["RED5", "BLUE5", "BLACK5"], "valid_as": {"RUN": false, "GROUP": true, "INVALID": true}, "classify": "GROUP"},
+    {"name": "group of four", "tiles": ["RED9", "BLUE9", "BLACK9", "YELLOW9"], "valid_as": {"RUN": false, "GROUP": true, "INVALID": true}, "classify": "GROUP"},
+    {"name": "two tiles are too few", "tiles": ["RED1", "RED2"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "empty set", "tiles": [], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "run out of board order", "tiles": ["RED3", "RED1", "RED2"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "run with a gap", "tiles": ["RED1", "RED2", "RED4"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "run does not wrap 13 to 1", "tiles": ["RED12", "RED13", "RED1"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "run mixes colors", "tiles": ["RED1", "BLUE2", "RED3"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "joker fills a run gap", "tiles": ["RED5", "JOKER", "RED7"], "valid_as": {"RUN": true, "GROUP": false, "INVALID": true}, "classify": "RUN"},
+    {"name": "joker starts a run", "tiles": ["JOKER", "RED2", "RED3"], "valid_as": {"RUN": true, "GROUP": false, "INVALID": true}, "classify": "RUN"},
+    {"name": "two jokers inside a run", "tiles": ["BLACK1", "JOKER", "JOKER", "BLACK4"], "valid_as": {"RUN": true, "GROUP": false, "INVALID": true}, "classify": "RUN"},
+    {"name": "joker cannot stand for 0", "tiles": ["JOKER", "RED1", "RED2"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "joker cannot stand for 14", "tiles": ["RED12", "RED13", "JOKER"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "one joker cannot cover two missing values", "tiles": ["RED1", "JOKER", "RED4"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "joker completes a group", "tiles": ["RED5", "BLUE5", "JOKER"], "valid_as": {"RUN": false, "GROUP": true, "INVALID": true}, "classify": "GROUP"},
+    {"name": "group repeats a color", "tiles": ["RED5", "RED5", "BLUE5"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "group mixes values", "tiles": ["RED5", "BLUE6", "BLACK5"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "group of five", "tiles": ["RED5", "BLUE5", "BLACK5", "YELLOW5", "JOKER"], "valid_as": {"RUN": false, "GROUP": false, "INVALID": false}, "classify": "INVALID"},
+    {"name": "one natural and two jokers fit both", "tiles": ["RED5", "JOKER", "JOKER"], "valid_as": {"RUN": true, "GROUP": true, "INVALID": true}, "classify": "RUN"},
+    {"name": "jokers before a 1 only fit a group", "tiles": ["JOKER", "JOKER", "RED1"], "valid_as": {"RUN": false, "GROUP": true, "INVALID": true}, "classify": "GROUP"},
+    {"name": "three jokers", "tiles": ["JOKER", "JOKER", "JOKER"], "valid_as": {"RUN": true, "GROUP": true, "INVALID": true}, "classify": "RUN"}
+  ]
+}

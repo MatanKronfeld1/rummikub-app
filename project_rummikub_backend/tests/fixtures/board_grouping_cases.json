@@ -1,0 +1,538 @@
+{
+ "description": "Board grouping regression cases shared by tests/test_vision_grouping.py and the app's test/vision_parser_test.dart. expected_groups compares tile labels per group, ignoring group order and tile order.",
+ "cases": [
+  {
+   "name": "photo_board_over_merge",
+   "note": "Board photo where the old box-gap grouping returned 4 sets (C+A+B and D+E merged). Boxes were measured by hand on the 2000x1500 view of the photo and padded by 8 px per side, which reproduced the old output exactly. The tiles are not real melds, so only geometry can split them.",
+   "detections": [
+    {
+     "class": "Orange7",
+     "x": 1279,
+     "y": 125,
+     "width": 218,
+     "height": 191,
+     "detection_id": "d0"
+    },
+    {
+     "class": "Black10",
+     "x": 350,
+     "y": 575,
+     "width": 140,
+     "height": 206,
+     "detection_id": "d1"
+    },
+    {
+     "class": "Blue12",
+     "x": 463,
+     "y": 585,
+     "width": 139,
+     "height": 202,
+     "detection_id": "d2"
+    },
+    {
+     "class": "Blue12",
+     "x": 578,
+     "y": 591,
+     "width": 139,
+     "height": 203,
+     "detection_id": "d3"
+    },
+    {
+     "class": "Red6",
+     "x": 706,
+     "y": 590,
+     "width": 159,
+     "height": 202,
+     "detection_id": "d4"
+    },
+    {
+     "class": "Red13",
+     "x": 856,
+     "y": 615,
+     "width": 148,
+     "height": 196,
+     "detection_id": "d5"
+    },
+    {
+     "class": "Red9",
+     "x": 980,
+     "y": 603,
+     "width": 146,
+     "height": 199,
+     "detection_id": "d6"
+    },
+    {
+     "class": "Orange10",
+     "x": 1102,
+     "y": 565,
+     "width": 141,
+     "height": 206,
+     "detection_id": "d7"
+    },
+    {
+     "class": "Orange9",
+     "x": 1210,
+     "y": 533,
+     "width": 166,
+     "height": 209,
+     "detection_id": "d8"
+    },
+    {
+     "class": "Red2",
+     "x": 1467,
+     "y": 685,
+     "width": 151,
+     "height": 206,
+     "detection_id": "d9"
+    },
+    {
+     "class": "Blue6",
+     "x": 1591,
+     "y": 737,
+     "width": 163,
+     "height": 211,
+     "detection_id": "d10"
+    },
+    {
+     "class": "Red5",
+     "x": 1729,
+     "y": 747,
+     "width": 184,
+     "height": 191,
+     "detection_id": "d11"
+    },
+    {
+     "class": "Red8",
+     "x": 202,
+     "y": 817,
+     "width": 171,
+     "height": 206,
+     "detection_id": "d12"
+    },
+    {
+     "class": "Blue5",
+     "x": 304,
+     "y": 865,
+     "width": 181,
+     "height": 206,
+     "detection_id": "d13"
+    },
+    {
+     "class": "Orange5",
+     "x": 420,
+     "y": 885,
+     "width": 176,
+     "height": 206,
+     "detection_id": "d14"
+    },
+    {
+     "class": "Black13",
+     "x": 451,
+     "y": 1190,
+     "width": 203,
+     "height": 236,
+     "detection_id": "d15"
+    },
+    {
+     "class": "Blue6",
+     "x": 542,
+     "y": 1110,
+     "width": 201,
+     "height": 226,
+     "detection_id": "d16"
+    },
+    {
+     "class": "Orange7",
+     "x": 641,
+     "y": 1035,
+     "width": 189,
+     "height": 236,
+     "detection_id": "d17"
+    },
+    {
+     "class": "Blue5",
+     "x": 751,
+     "y": 976,
+     "width": 194,
+     "height": 219,
+     "detection_id": "d18"
+    },
+    {
+     "class": "Blue3",
+     "x": 970,
+     "y": 889,
+     "width": 196,
+     "height": 238,
+     "detection_id": "d19"
+    },
+    {
+     "class": "Blue13",
+     "x": 1087,
+     "y": 919,
+     "width": 201,
+     "height": 238,
+     "detection_id": "d20"
+    },
+    {
+     "class": "Red12",
+     "x": 1199,
+     "y": 961,
+     "width": 198,
+     "height": 223,
+     "detection_id": "d21"
+    }
+   ],
+   "expected_groups": [
+    [
+     "Orange7"
+    ],
+    [
+     "Black10",
+     "Blue12",
+     "Blue12",
+     "Red6"
+    ],
+    [
+     "Red13",
+     "Red9",
+     "Orange10",
+     "Orange9"
+    ],
+    [
+     "Red2",
+     "Blue6",
+     "Red5"
+    ],
+    [
+     "Red8",
+     "Blue5",
+     "Orange5"
+    ],
+    [
+     "Black13",
+     "Blue6",
+     "Orange7",
+     "Blue5"
+    ],
+    [
+     "Blue3",
+     "Blue13",
+     "Red12"
+    ]
+   ]
+  },
+  {
+   "name": "touching_run_and_group_on_one_line",
+   "note": "Guardrail: an invalid line that cuts into valid sets is cut.",
+   "detections": [
+    {
+     "class": "Red1",
+     "x": 20,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d0"
+    },
+    {
+     "class": "Red2",
+     "x": 62,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d1"
+    },
+    {
+     "class": "Red3",
+     "x": 104,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d2"
+    },
+    {
+     "class": "Blue5",
+     "x": 146,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d3"
+    },
+    {
+     "class": "Black5",
+     "x": 188,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d4"
+    },
+    {
+     "class": "Orange5",
+     "x": 230,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d5"
+    }
+   ],
+   "expected_groups": [
+    [
+     "Red1",
+     "Red2",
+     "Red3"
+    ],
+    [
+     "Blue5",
+     "Black5",
+     "Orange5"
+    ]
+   ]
+  },
+  {
+   "name": "sloppy_gap_inside_valid_run",
+   "note": "Guardrail: a 35% gap inside a real run is rejoined because only the union is valid.",
+   "detections": [
+    {
+     "class": "Red1",
+     "x": 20,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d0"
+    },
+    {
+     "class": "Red2",
+     "x": 62,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d1"
+    },
+    {
+     "class": "Red3",
+     "x": 118,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d2"
+    },
+    {
+     "class": "Red4",
+     "x": 160,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d3"
+    },
+    {
+     "class": "Blue8",
+     "x": 300,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d4"
+    },
+    {
+     "class": "Black8",
+     "x": 342,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d5"
+    },
+    {
+     "class": "Orange8",
+     "x": 384,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d6"
+    }
+   ],
+   "expected_groups": [
+    [
+     "Red1",
+     "Red2",
+     "Red3",
+     "Red4"
+    ],
+    [
+     "Blue8",
+     "Black8",
+     "Orange8"
+    ]
+   ]
+  },
+  {
+   "name": "melds_with_scattered_single_tiles",
+   "note": "Loose single tiles stay single.",
+   "detections": [
+    {
+     "class": "Red1",
+     "x": 20,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d0"
+    },
+    {
+     "class": "Red2",
+     "x": 62,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d1"
+    },
+    {
+     "class": "Red3",
+     "x": 104,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d2"
+    },
+    {
+     "class": "Blue4",
+     "x": 20,
+     "y": 250,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d3"
+    },
+    {
+     "class": "Blue5",
+     "x": 62,
+     "y": 250,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d4"
+    },
+    {
+     "class": "Blue6",
+     "x": 104,
+     "y": 250,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d5"
+    },
+    {
+     "class": "Blue7",
+     "x": 146,
+     "y": 250,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d6"
+    },
+    {
+     "class": "Black9",
+     "x": 400,
+     "y": 40,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d7"
+    },
+    {
+     "class": "Red11",
+     "x": 500,
+     "y": 300,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d8"
+    },
+    {
+     "class": "Orange2",
+     "x": 300,
+     "y": 420,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d9"
+    }
+   ],
+   "expected_groups": [
+    [
+     "Red1",
+     "Red2",
+     "Red3"
+    ],
+    [
+     "Blue4",
+     "Blue5",
+     "Blue6",
+     "Blue7"
+    ],
+    [
+     "Black9"
+    ],
+    [
+     "Red11"
+    ],
+    [
+     "Orange2"
+    ]
+   ]
+  },
+  {
+   "name": "touching_invalid_sets_on_one_line_stay_merged",
+   "note": "Known limit: touching tiles that form no valid set give no signal to cut; the correction screen's split control handles it.",
+   "detections": [
+    {
+     "class": "Red1",
+     "x": 20,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d0"
+    },
+    {
+     "class": "Blue9",
+     "x": 62,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d1"
+    },
+    {
+     "class": "Black3",
+     "x": 104,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d2"
+    },
+    {
+     "class": "Orange12",
+     "x": 146,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d3"
+    },
+    {
+     "class": "Red7",
+     "x": 188,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d4"
+    },
+    {
+     "class": "Blue2",
+     "x": 230,
+     "y": 100,
+     "width": 40,
+     "height": 60,
+     "detection_id": "d5"
+    }
+   ],
+   "expected_groups": [
+    [
+     "Red1",
+     "Blue9",
+     "Black3",
+     "Orange12",
+     "Red7",
+     "Blue2"
+    ]
+   ]
+  }
+ ]
+}

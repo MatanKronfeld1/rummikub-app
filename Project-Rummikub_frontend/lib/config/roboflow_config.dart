@@ -42,4 +42,9 @@ class RoboflowConfig {
   }
 
   static bool get hasApiKey => apiKey.isNotEmpty;
+
+  /// `--dart-define=VISION_DEBUG=true` keeps the exact JPEGs and workflow JSON
+  /// of the last recognition and shows a download button for them on the
+  /// correction screen. Off by default: normal runs keep no debug data.
+  static const debugDump = bool.fromEnvironment('VISION_DEBUG');
 }

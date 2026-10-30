@@ -1,11 +1,17 @@
+import 'dart:js_interop';
 import 'dart:typed_data';
-import 'dart:html' as html;
+
+import 'package:web/web.dart' as web;
 
 void downloadBytes(Uint8List bytes, String filename, String mimeType) {
-  final blob = html.Blob([bytes], mimeType);
-  final url = html.Url.createObjectUrlFromBlob(blob);
-  html.AnchorElement(href: url)
-    ..setAttribute('download', filename)
+  final blob = web.Blob(
+    [bytes.toJS].toJS,
+    web.BlobPropertyBag(type: mimeType),
+  );
+  final url = web.URL.createObjectURL(blob);
+  web.HTMLAnchorElement()
+    ..href = url
+    ..download = filename
     ..click();
-  html.Url.revokeObjectUrl(url);
+  web.URL.revokeObjectURL(url);
 }

@@ -3,6 +3,7 @@ uvicorn
 pydantic
 ortools
 pytest
+httpx  # FastAPI TestClient, used by tests/test_solve_route.py
 # Local two-stage pipeline dependencies
 opencv-python-headless
 numpy

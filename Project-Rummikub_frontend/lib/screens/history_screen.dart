@@ -55,7 +55,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   SizedBox(height: 120),
                   _Message(
                     text:
-                        'No games yet.\nPlay a game from the Play tab, then pull to refresh.',
+                        'No games yet.\nPlay a game from the main screen, then pull to refresh.',
                   ),
                 ],
               ),
@@ -71,7 +71,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
               separatorBuilder: (_, __) => const SizedBox(height: 8),
               itemBuilder: (context, index) {
                 final game = games[index];
-                final isWin = game.afterState.isRackEmpty && game.tilesDropped > 0;
+                final isWin =
+                    game.afterState.isRackEmpty && game.tilesDropped > 0;
                 return Card(
                   child: ListTile(
                     leading: Icon(

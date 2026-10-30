@@ -13,6 +13,36 @@ abstract final class AuthColors {
   static const fieldBorder = Color(0xFFD9D3C7);
 }
 
+/// Tests turn this off: Google Fonts cannot load there (no network, no
+/// bundled files) and reports the failed load as an uncaught async error.
+/// The lettering then falls back to the default font; the layout is the same.
+@visibleForTesting
+bool brandFontsEnabled = true;
+
+/// The red display face: Playfair Display Black Italic.
+TextStyle brandDisplayStyle({
+  required double fontSize,
+  required double height,
+  required double letterSpacing,
+}) {
+  const weight = FontWeight.w900;
+  return brandFontsEnabled
+      ? GoogleFonts.playfairDisplay(
+          fontSize: fontSize,
+          fontWeight: weight,
+          fontStyle: FontStyle.italic,
+          height: height,
+          letterSpacing: letterSpacing,
+        )
+      : TextStyle(
+          fontSize: fontSize,
+          fontWeight: weight,
+          fontStyle: FontStyle.italic,
+          height: height,
+          letterSpacing: letterSpacing,
+        );
+}
+
 ThemeData authTheme() {
   const radius = 16.0;
   final rounded = RoundedRectangleBorder(
@@ -122,23 +152,30 @@ class RummikubHelperWordmark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final rummikubStyle = GoogleFonts.playfairDisplay(
+    final rummikubStyle = brandDisplayStyle(
       fontSize: compact ? 44 : 56,
-      fontWeight: FontWeight.w900,
-      fontStyle: FontStyle.italic,
       height: 0.86,
       letterSpacing: -1.2,
     );
-    final helperStyle = GoogleFonts.allura(
-      fontSize: compact ? 40 : 48,
-      fontWeight: FontWeight.w400,
-      height: 0.7,
-      color: AuthColors.ink,
-      shadows: const [
-        Shadow(color: Color(0xF2FFFFFF), blurRadius: 8),
-        Shadow(color: Color(0x99FFFFFF), blurRadius: 16),
-      ],
-    );
+    const shadows = [
+      Shadow(color: Color(0xF2FFFFFF), blurRadius: 8),
+      Shadow(color: Color(0x99FFFFFF), blurRadius: 16),
+    ];
+    final helperStyle = brandFontsEnabled
+        ? GoogleFonts.allura(
+            fontSize: compact ? 40 : 48,
+            fontWeight: FontWeight.w400,
+            height: 0.7,
+            color: AuthColors.ink,
+            shadows: shadows,
+          )
+        : TextStyle(
+            fontSize: compact ? 40 : 48,
+            fontStyle: FontStyle.italic,
+            height: 0.7,
+            color: AuthColors.ink,
+            shadows: shadows,
+          );
 
     return FittedBox(
       fit: BoxFit.scaleDown,
@@ -146,7 +183,7 @@ class RummikubHelperWordmark extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          _OutlinedText(
+          OutlinedText(
             'Rummikub',
             style: rummikubStyle,
             fill: AuthColors.red,
@@ -158,6 +195,28 @@ class RummikubHelperWordmark extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// A section or drawer title in the wordmark's red display face.
+class BrandHeading extends StatelessWidget {
+  const BrandHeading(this.text, {super.key, this.fontSize = 26});
+
+  final String text;
+  final double fontSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedText(
+      text,
+      style: brandDisplayStyle(
+        fontSize: fontSize,
+        height: 0.95,
+        letterSpacing: -0.6,
+      ),
+      fill: AuthColors.red,
+      strokeWidth: fontSize * 0.14,
     );
   }
 }
@@ -176,9 +235,12 @@ class AuthFormCard extends StatelessWidget {
   }
 }
 
-class _OutlinedText extends StatelessWidget {
-  const _OutlinedText(
+/// [text] filled with [fill] under a white outline and a hard drop shadow:
+/// the Rummikub box-art lettering.
+class OutlinedText extends StatelessWidget {
+  const OutlinedText(
     this.text, {
+    super.key,
     required this.style,
     required this.fill,
     this.strokeWidth = 6,

@@ -38,8 +38,7 @@ class TileView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final background = colorForTile(tile.color);
-    final foreground =
-        tile.color == 'YELLOW' ? Colors.black87 : Colors.white;
+    final foreground = tile.color == 'YELLOW' ? Colors.black87 : Colors.white;
 
     return Material(
       color: background,
@@ -126,6 +125,8 @@ class BoardSetCard extends StatelessWidget {
     this.highlightedTileIds = const {},
     this.onTileTap,
     this.onInsertAt,
+    this.onSplitAt,
+    this.onAutoSplit,
     this.readOnly = false,
   });
 
@@ -135,6 +136,13 @@ class BoardSetCard extends StatelessWidget {
   final Set<String> highlightedTileIds;
   final ValueChanged<Tile>? onTileTap;
   final ValueChanged<int>? onInsertAt;
+
+  /// Shows a scissors button between tiles (when not inserting); the value is
+  /// the index of the first tile of the new set.
+  final ValueChanged<int>? onSplitAt;
+
+  /// Shows an "Auto-split" button in the header.
+  final VoidCallback? onAutoSplit;
   final bool readOnly;
 
   @override
@@ -155,13 +163,25 @@ class BoardSetCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Set ${setIndex + 1}  ·  ${tileSet.type}',
-              style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                    color: isInvalid
-                        ? Theme.of(context).colorScheme.error
-                        : null,
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Set ${setIndex + 1}  ·  ${tileSet.type}',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          color: isInvalid
+                              ? Theme.of(context).colorScheme.error
+                              : null,
+                        ),
                   ),
+                ),
+                if (!readOnly && onAutoSplit != null)
+                  TextButton.icon(
+                    onPressed: onAutoSplit,
+                    icon: const Icon(Icons.auto_fix_high, size: 16),
+                    label: const Text('Auto-split'),
+                  ),
+              ],
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -201,6 +221,20 @@ class BoardSetCard extends StatelessWidget {
           onTap: onTileTap == null ? null : () => onTileTap!(tile),
         ),
       );
+      if (!readOnly &&
+          !canInsert &&
+          onSplitAt != null &&
+          i < tiles.length - 1) {
+        views.add(
+          IconButton(
+            tooltip: 'Split here',
+            visualDensity: VisualDensity.compact,
+            iconSize: 16,
+            onPressed: () => onSplitAt!(i + 1),
+            icon: const Icon(Icons.content_cut),
+          ),
+        );
+      }
       if (canInsert) {
         views.add(
           EmptySlot(
@@ -274,13 +308,13 @@ class GameBoardView extends StatelessWidget {
           )
         else
           ...gameState.board.asMap().entries.map(
-            (entry) => BoardSetCard(
-              setIndex: entry.key,
-              tileSet: entry.value,
-              highlightedTileIds: highlightedTileIds,
-              readOnly: true,
-            ),
-          ),
+                (entry) => BoardSetCard(
+                  setIndex: entry.key,
+                  tileSet: entry.value,
+                  highlightedTileIds: highlightedTileIds,
+                  readOnly: true,
+                ),
+              ),
         const SizedBox(height: 24),
         SectionHeader(
           title: 'Rack',

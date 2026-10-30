@@ -94,7 +94,8 @@ class GroupingOptions:
     rack_boundary_y: float | None = None
     rack_bottom_fraction: float = 0.28
     row_tolerance: float = 0.70
-    meld_gap_width_ratio: float = 0.25
+    # Minimum board link tolerance above the tile pitch (see _group_board).
+    pitch_tolerance: float = 0.15
 
 
 @dataclass(slots=True)
@@ -358,6 +359,15 @@ def _separate_rack_rows(
 
 _MELD_SPREAD_RATIO = 0.6
 _MELD_CLUSTER_RATIO = 0.5
+# Upper clamp of the link tolerance; stacked rows sit ~1.5 pitches apart.
+_MAX_PITCH_TOLERANCE = 0.30
+# Fragments whose facing ends are this many pitches apart may be rejoined.
+_REJOIN_RATIO = 1.6
+
+
+def _center_dist(a: Detection, b: Detection) -> float:
+    """Distance between two box centers."""
+    return math.hypot((a.x or 0.0) - (b.x or 0.0), (a.y or 0.0) - (b.y or 0.0))
 
 
 def _box_gap(a: Detection, b: Detection) -> float:
@@ -374,7 +384,7 @@ def _box_gap(a: Detection, b: Detection) -> float:
 def _link_components(
     items: Sequence[Detection], threshold: float
 ) -> list[list[Detection]]:
-    """Connected components of the graph linking boxes with gap <= threshold."""
+    """Connected components of boxes whose centers are <= threshold apart."""
     parent = list(range(len(items)))
 
     def find(index: int) -> int:
@@ -385,7 +395,7 @@ def _link_components(
 
     for i in range(len(items)):
         for j in range(i + 1, len(items)):
-            if _box_gap(items[i], items[j]) <= threshold:
+            if _center_dist(items[i], items[j]) <= threshold:
                 parent[find(j)] = find(i)
     groups: dict[int, list[Detection]] = {}
     for index, item in enumerate(items):
@@ -464,20 +474,114 @@ def _order_along_axis(items: Sequence[Detection]) -> tuple[list[Detection], floa
     return ordered, angle
 
 
+def _split_at_gap_peaks(
+    ordered: Sequence[Detection], threshold: float
+) -> list[list[Detection]]:
+    """Cut an axis-ordered line where neighbouring centers exceed threshold.
+
+    These are local gap peaks; the cut also breaks L-shaped chains.
+    """
+    if not ordered or threshold <= 0:
+        return [list(ordered)]
+    pieces: list[list[Detection]] = [[ordered[0]]]
+    for previous, current in zip(ordered, ordered[1:]):
+        if _center_dist(previous, current) > threshold:
+            pieces.append([])
+        pieces[-1].append(current)
+    return pieces
+
+
+def _is_valid_meld(items: Sequence[Detection]) -> bool:
+    """True when the tiles form a valid set read forward or reversed."""
+    if len(items) < 3 or any(d.tile is None for d in items):
+        return False
+    return any(
+        _evaluate_order(order, candidate_type, "probe")[0]
+        for candidate_type in (SetType.RUN, SetType.GROUP)
+        for order in (list(items), list(reversed(items)))
+    )
+
+
+def _split_into_valid_sets(line: Sequence[Detection]) -> list[list[Detection]]:
+    """Guardrail: cut an invalid line into the fewest valid sets, if possible.
+
+    Mirrors ``SetValidator.splitIntoValidSets`` in the app (a run and a group
+    touching on one line).
+    """
+    n = len(line)
+    if n < 6 or _is_valid_meld(line):
+        return [list(line)]
+    # best[end]: fewest valid sets covering line[:end]; cut_at[end]: where the
+    # last of those sets starts.
+    best: list[int | None] = [0] + [None] * n
+    cut_at = [0] * (n + 1)
+    for end in range(3, n + 1):
+        for start in range(end - 2):
+            before = best[start]
+            if before is None or not _is_valid_meld(line[start:end]):
+                continue
+            current = best[end]
+            if current is None or before + 1 < current:
+                best[end] = before + 1
+                cut_at[end] = start
+    if best[n] is None:
+        return [list(line)]
+    pieces: list[list[Detection]] = []
+    end = n
+    while end > 0:
+        pieces.insert(0, list(line[cut_at[end] : end]))
+        end = cut_at[end]
+    return pieces
+
+
+def _rejoin_fragments(
+    parts: list[tuple[int, list[Detection]]], reach: float
+) -> None:
+    """Guardrail: rejoin end-to-end fragments when only the union is valid.
+
+    Catches a sloppy gap inside a real meld.  Edits ``parts`` in place; a
+    merged part keeps the first fragment's component index.
+    """
+    merged = True
+    while merged:
+        merged = False
+        for a, (component_index, first) in enumerate(parts):
+            for b, (_other_index, second) in enumerate(parts):
+                if a == b or _center_dist(first[-1], second[0]) > reach:
+                    continue
+                if _is_valid_meld(first) and _is_valid_meld(second):
+                    continue
+                union, _angle = _order_along_axis([*first, *second])
+                if not _is_valid_meld(union):
+                    continue
+                parts[a] = (component_index, union)
+                del parts[b]
+                merged = True
+                break
+            if merged:
+                break
+
+
 def _group_board(
     detections: Sequence[Detection], options: GroupingOptions
 ) -> tuple[list[dict[str, Any]], int]:
     """Rotation-aware grouping of board boxes into meld candidates.
 
-    Boxes whose pairwise gap is below a data-driven threshold are linked into
-    connected components; components that contain several parallel lines are
-    split along the perpendicular axis; every meld is ordered along its
-    principal axis and validated forward and reversed.
+    Tiles are linked when their centers are at most about one tile pitch apart
+    (the median nearest-neighbour center distance, which does not depend on
+    rotation or box padding); components that contain several parallel lines
+    are split along the perpendicular axis, and each line is cut where
+    neighbouring centers are farther apart than the link threshold.  Two
+    rule-based guardrails follow: an invalid line that cuts into valid sets is
+    cut, and end-to-end fragments whose union is a valid set are rejoined.
+    Every meld is ordered along its principal axis and validated forward and
+    reversed.
 
     Returns ``(melds, component_count)``.
     """
     if not detections:
         return [], 0
+    pitch = 0.0
     if len(detections) == 1:
         components = [list(detections)]
         tile_long = 0.0
@@ -486,18 +590,21 @@ def _group_board(
         tile_short = median(min(d.width or 0.0, d.height or 0.0) for d in detections)
         tile_long = median(max(d.width or 0.0, d.height or 0.0) for d in detections)
         nearest = [
-            min(_box_gap(d, other) for other in detections if other is not d)
+            min(_center_dist(d, other) for other in detections if other is not d)
             for d in detections
         ]
-        typical = median(nearest)
-        mad = median(abs(gap - typical) for gap in nearest)
-        link_threshold = typical + max(
-            options.meld_gap_width_ratio * tile_short, 3 * mad
+        # The floor guards against duplicate boxes sharing one center.
+        pitch = max(median(nearest), 0.5 * tile_short)
+        mad = median(abs(distance - pitch) for distance in nearest)
+        tolerance = min(
+            max(options.pitch_tolerance, 3 * mad / pitch),
+            max(_MAX_PITCH_TOLERANCE, options.pitch_tolerance),
         )
+        link_threshold = pitch * (1 + tolerance)
         components = _link_components(detections, link_threshold)
 
-    # (centroid_y, centroid_x, component index, ordered tiles, angle)
-    entries: list[tuple[float, float, int, list[Detection], float]] = []
+    # (component index, axis-ordered tiles) of every meld candidate.
+    parts: list[tuple[int, list[Detection]]] = []
     for component_index, component in enumerate(components):
         clusters = (
             _perpendicular_clusters(component, tile_long)
@@ -505,18 +612,30 @@ def _group_board(
             else [component]
         )
         if len(clusters) == 1:
-            parts = [component]
+            lines = [component]
         else:
-            parts = [
-                part
+            lines = [
+                line
                 for cluster in clusters
-                for part in _link_components(cluster, link_threshold)
+                for line in _link_components(cluster, link_threshold)
             ]
-        for part in parts:
-            ordered, angle = _order_along_axis(part)
-            cx = sum(d.x or 0.0 for d in part) / len(part)
-            cy = sum(d.y or 0.0 for d in part) / len(part)
-            entries.append((cy, cx, component_index, ordered, angle))
+        for line in lines:
+            ordered, _angle = _order_along_axis(line)
+            for piece in _split_at_gap_peaks(ordered, link_threshold):
+                parts.extend(
+                    (component_index, valid_piece)
+                    for valid_piece in _split_into_valid_sets(piece)
+                )
+    if pitch > 0:
+        _rejoin_fragments(parts, _REJOIN_RATIO * pitch)
+
+    # (centroid_y, centroid_x, component index, ordered tiles, angle)
+    entries: list[tuple[float, float, int, list[Detection], float]] = []
+    for component_index, part in parts:
+        ordered, angle = _order_along_axis(part)
+        cx = sum(d.x or 0.0 for d in part) / len(part)
+        cy = sum(d.y or 0.0 for d in part) / len(part)
+        entries.append((cy, cx, component_index, ordered, angle))
 
     # Deterministic output order: centroid (y, x).  row_index is the rank of
     # the meld's connected component, meld_index its rank within the component.

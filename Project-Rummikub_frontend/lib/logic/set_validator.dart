@@ -76,6 +76,42 @@ class SetValidator {
     return _validateRun(tiles, '').$1 || _validateGroup(tiles, '').$1;
   }
 
+  /// Cuts [tiles] (kept in order) into the fewest valid sets, or null when no
+  /// cut works. A piece may read in either direction; it is returned in the
+  /// direction that validates.
+  static List<List<Tile>>? splitIntoValidSets(List<Tile> tiles) {
+    final n = tiles.length;
+    // best[end]: fewest valid sets covering tiles[0, end); cutAt[end]: where
+    // the last of those sets starts.
+    final best = List<int?>.filled(n + 1, null)..[0] = 0;
+    final cutAt = List<int>.filled(n + 1, 0);
+    for (var end = minSetSize; end <= n; end++) {
+      for (var start = 0; start <= end - minSetSize; start++) {
+        final before = best[start];
+        if (before == null) continue;
+        final piece = tiles.sublist(start, end);
+        if (!setTilesAreValid(piece) &&
+            !setTilesAreValid(piece.reversed.toList())) {
+          continue;
+        }
+        if (best[end] == null || before + 1 < best[end]!) {
+          best[end] = before + 1;
+          cutAt[end] = start;
+        }
+      }
+    }
+    if (n == 0 || best[n] == null) return null;
+    final pieces = <List<Tile>>[];
+    for (var end = n; end > 0; end = cutAt[end]) {
+      final piece = tiles.sublist(cutAt[end], end);
+      pieces.insert(
+        0,
+        setTilesAreValid(piece) ? piece : piece.reversed.toList(),
+      );
+    }
+    return pieces;
+  }
+
   static (bool, String) _validateRun(List<Tile> tiles, String label) {
     if (tiles.length > maxTileValue) {
       return (
@@ -106,8 +142,7 @@ class SetValidator {
     final endValue = startValue + tiles.length - 1;
 
     if (startValue < minTileValue || endValue > maxTileValue) {
-      final outOfRange =
-          startValue < minTileValue ? startValue : endValue;
+      final outOfRange = startValue < minTileValue ? startValue : endValue;
       return (
         false,
         '$label is not a valid RUN: Joker placement would require a tile with '

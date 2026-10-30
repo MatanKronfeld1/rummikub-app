@@ -33,6 +33,10 @@ dependencies:
   # Brand typography for the auth wordmark
   google_fonts: ^6.2.1
 
+  # Browser download of the vision debug dump (replaces deprecated dart:html;
+  # already in the build through image_picker_for_web)
+  web: ^1.1.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

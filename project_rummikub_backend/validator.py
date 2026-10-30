@@ -1,4 +1,4 @@
-from models import Set, SetType, Tile, TileColor
+from models import GameState, Set, SetType, Tile, TileColor
 
 _MIN_SET_SIZE = 3
 _MAX_GROUP_SIZE = 4
@@ -18,6 +18,35 @@ def validate_board(board: list[Set]) -> tuple[bool, str]:
         if not is_valid:
             return False, error_message
     return True, "Board is valid"
+
+
+def validate_tile_ids(game_state: GameState) -> tuple[bool, str]:
+    """Every physical tile id must appear once across the board and the rack.
+
+    The solver tracks tiles by id, so a repeated id would make a tile appear
+    twice (or vanish) in the answer.
+    """
+    seen: set[str] = set()
+    tiles = [tile for rummikub_set in game_state.board for tile in rummikub_set.tiles]
+    for tile in tiles + list(game_state.rack):
+        if tile.id in seen:
+            return False, f"Tile id {tile.id} appears more than once in the game state."
+        seen.add(tile.id)
+    return True, "Tile ids are unique"
+
+
+def classify_tiles(tiles: list[Tile]) -> SetType:
+    """RUN, GROUP or INVALID from the tiles alone (RUN preferred if both).
+
+    Mirror of ``SetValidator.classifySet`` in the Flutter app.
+    """
+    if len(tiles) < _MIN_SET_SIZE:
+        return SetType.INVALID
+    if _validate_run(tiles, "")[0]:
+        return SetType.RUN
+    if _validate_group(tiles, "")[0]:
+        return SetType.GROUP
+    return SetType.INVALID
 
 
 def _is_joker(tile: Tile) -> bool:

@@ -22,7 +22,7 @@ except ImportError:
 
 from models import GameState, SolveResponse
 from solver import solve_rummikub
-from validator import validate_board
+from validator import validate_board, validate_tile_ids
 from vision_grouping import GroupingOptions, group_vision_detections
 
 logging.basicConfig(level=logging.INFO)
@@ -55,9 +55,12 @@ def health() -> dict[str, str]:
 
 @app.post("/solve", response_model=SolveResponse)
 def solve(game_state: GameState) -> SolveResponse:
-    is_valid, error_message = validate_board(game_state.board)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=error_message)
+    for is_valid, error_message in (
+        validate_board(game_state.board),
+        validate_tile_ids(game_state),
+    ):
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_message)
 
     start = time.perf_counter()
     optimal_state = solve_rummikub(game_state)
@@ -78,28 +81,32 @@ _DEFAULT_WORKFLOW_FALLBACK_URL = (
     "https://serverless.roboflow.com/infer/workflows/matan-kronfeld/rummikub-v1-logic"
 )
 
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
-_DEBUG_LOG_PATH = _WORKSPACE_ROOT / "debug-c981a2.log"
-_DEBUG_DUMP_DIR = _WORKSPACE_ROOT / "debug_vision_dumps"
+def _vision_debug_dir() -> Optional[Path]:
+    """Vision diagnostics are off unless ``VISION_DEBUG_DIR`` names a folder.
+
+    When set, every proxied Roboflow call writes the decoded JPEG it forwards
+    and a JSON line of response stats (``vision_debug.jsonl``) there.
+    """
+    value = os.environ.get("VISION_DEBUG_DIR")
+    return Path(value) if value else None
 
 
-def _agent_log(location: str, message: str, hypothesis_id: str, data: dict[str, Any]) -> None:
-    # #region agent log
+def _debug_log(location: str, message: str, data: dict[str, Any]) -> None:
+    debug_dir = _vision_debug_dir()
+    if debug_dir is None:
+        return
     payload = {
-        "sessionId": "c981a2",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
         "location": location,
         "message": message,
         "data": data,
         "timestamp": int(time.time() * 1000),
     }
     try:
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as handle:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        with (debug_dir / "vision_debug.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload) + "\n")
     except OSError:
-        logger.exception("Failed to write debug log")
-    # #endregion
+        logger.exception("Failed to write the vision debug log")
 
 
 def _decode_image_bytes(image: dict) -> Optional[bytes]:
@@ -257,20 +264,21 @@ def _prediction_stats(parsed: Any) -> dict[str, Any]:
     }
 
 
-def _dump_pre_infer_jpeg(raw: bytes) -> Optional[str]:
-    # #region agent log
+def _dump_pre_infer_jpeg(debug_dir: Path, raw: bytes) -> Optional[str]:
     try:
-        _DEBUG_DUMP_DIR.mkdir(parents=True, exist_ok=True)
-        path = _DEBUG_DUMP_DIR / f"pre_infer_{int(time.time() * 1000)}.jpg"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        path = debug_dir / f"pre_infer_{int(time.time() * 1000)}.jpg"
         path.write_bytes(raw)
         return str(path)
     except OSError:
         logger.exception("Failed to dump pre-infer JPEG")
         return None
-    # #endregion
 
 
 def _inspect_and_dump_image(image: dict) -> None:
+    debug_dir = _vision_debug_dir()
+    if debug_dir is None:
+        return
     raw = _decode_image_bytes(image)
     meta: dict[str, Any] = {
         "image_type": image.get("type"),
@@ -281,15 +289,8 @@ def _inspect_and_dump_image(image: dict) -> None:
     }
     if raw is not None:
         meta.update(_jpeg_meta(raw))
-        meta["dump_path"] = _dump_pre_infer_jpeg(raw)
-    # #region agent log
-    _agent_log(
-        "main.py:_inspect_and_dump_image",
-        "pre-infer image dump",
-        "H1",
-        meta,
-    )
-    # #endregion
+        meta["dump_path"] = _dump_pre_infer_jpeg(debug_dir, raw)
+    _debug_log("main.py:_inspect_and_dump_image", "pre-infer image dump", meta)
 
 
 def _forward_to_roboflow(payload: dict) -> JSONResponse:
@@ -328,33 +329,18 @@ def _forward_to_roboflow(payload: dict) -> JSONResponse:
                     parsed = json.loads(raw) if raw else {}
                 except json.JSONDecodeError:
                     parsed = {"detail": raw[:400]}
-                boxes: list[dict[str, Any]] = []
-                _collect_predictions(parsed, boxes)
                 # FastAPI is a CORS proxy: no NMS, clustering, confidence, or
                 # board/rack split. The JSON returned to Flutter is unchanged.
-                print(f"Raw detections: {len(boxes)}")
-                print(f"After filtering: {len(boxes)}")
-                sample = [
-                    str(item.get("class") or item.get("class_name") or item.get("className") or "")
-                    for item in boxes[:12]
-                ]
-                logger.info("Raw detections: %s sample=%s", len(boxes), sample)
-                logger.info(
-                    "After filtering: %s (vision proxy does not filter detections)",
-                    len(boxes),
-                )
-                # #region agent log
-                _agent_log(
-                    "main.py:_forward_to_roboflow",
-                    "roboflow response stats",
-                    "H3",
-                    {
-                        "status": response.status,
-                        "url_path": url.split(".com", 1)[-1],
-                        **_prediction_stats(parsed),
-                    },
-                )
-                # #endregion
+                if _vision_debug_dir() is not None:
+                    _debug_log(
+                        "main.py:_forward_to_roboflow",
+                        "roboflow response stats",
+                        {
+                            "status": response.status,
+                            "url_path": url.split(".com", 1)[-1],
+                            **_prediction_stats(parsed),
+                        },
+                    )
                 return JSONResponse(status_code=response.status, content=parsed)
         except urllib.error.HTTPError as error:
             last_http_error = error
@@ -365,14 +351,13 @@ def _forward_to_roboflow(payload: dict) -> JSONResponse:
                 parsed = json.loads(raw) if raw else {"detail": f"Roboflow HTTP {error.code}"}
             except json.JSONDecodeError:
                 parsed = {"detail": raw[:400] or f"Roboflow HTTP {error.code}"}
-            # #region agent log
-            _agent_log(
-                "main.py:_forward_to_roboflow",
-                "roboflow HTTP error",
-                "H4",
-                {"status": error.code, **_prediction_stats(parsed)},
-            )
-            # #endregion
+            logger.warning("Roboflow returned HTTP %s", error.code)
+            if _vision_debug_dir() is not None:
+                _debug_log(
+                    "main.py:_forward_to_roboflow",
+                    "roboflow HTTP error",
+                    {"status": error.code, **_prediction_stats(parsed)},
+                )
             return JSONResponse(status_code=error.code, content=parsed)
         except urllib.error.URLError as error:
             raise HTTPException(
@@ -444,7 +429,7 @@ def vision_group(payload: dict) -> dict[str, Any]:
     The request may be a workflow response directly, or
     ``{"response": <workflow response>, "options": {...}}``. Supported options
     are ``image_height``, ``rack_boundary_y``, ``rack_bottom_fraction``,
-    ``row_tolerance``, and ``meld_gap_width_ratio``.
+    ``row_tolerance``, and ``pitch_tolerance``.
     """
     raw_options = payload.get("options", {})
     if not isinstance(raw_options, dict):
@@ -454,7 +439,7 @@ def vision_group(payload: dict) -> dict[str, Any]:
         "rack_boundary_y",
         "rack_bottom_fraction",
         "row_tolerance",
-        "meld_gap_width_ratio",
+        "pitch_tolerance",
     }
     unknown = set(raw_options) - allowed
     if unknown:
@@ -477,10 +462,10 @@ def vision_group(payload: dict) -> dict[str, Any]:
         raise HTTPException(
             status_code=400, detail="rack_bottom_fraction must be between 0 and 1."
         )
-    if options.row_tolerance <= 0 or options.meld_gap_width_ratio < 0:
+    if options.row_tolerance <= 0 or options.pitch_tolerance < 0:
         raise HTTPException(
             status_code=400,
-            detail="row_tolerance must be positive and meld_gap_width_ratio non-negative.",
+            detail="row_tolerance must be positive and pitch_tolerance non-negative.",
         )
     source = payload.get("response", payload)
     return group_vision_detections(source, options=options)

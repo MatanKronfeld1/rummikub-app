@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -75,7 +76,8 @@ def main() -> None:
     }
     detector, classifier = YOLO(args.detector), YOLO(args.classifier)
     image_dir, label_dir = Path(args.source) / "images", Path(args.source) / "labels"
-    total_gt = matched = class_correct = exact_images = image_count = 0
+    total_gt = matched = class_correct = exact_images = image_count = extra_boxes = 0
+    confusions: Counter[tuple[str, str]] = Counter()
 
     for label_path in sorted(label_dir.glob("*.txt")):
         if label_path.stem not in val_stems:
@@ -114,14 +116,21 @@ def main() -> None:
                 class_correct += 1
             else:
                 image_ok = False
+                confusions[(names[class_id], predicted_name)] += 1
         if unused:
             image_ok = False
+            extra_boxes += len(unused)
         exact_images += int(image_ok)
         image_count += 1
 
     print(f"Detector recall@IoU{args.iou:.2f}: {matched}/{total_gt} = {matched/max(1,total_gt):.3f}")
     print(f"Classifier top-1 on matched crops: {class_correct}/{matched} = {class_correct/max(1,matched):.3f}")
     print(f"Exact all-tiles-correct images: {exact_images}/{image_count} = {exact_images/max(1,image_count):.3f}")
+    print(f"Extra detections (no matching tile): {extra_boxes}")
+    if confusions:
+        print("\nMost common confusions (truth -> predicted):")
+        for (truth, predicted), count in confusions.most_common(15):
+            print(f"  {truth} -> {predicted}: {count}")
 
 
 if __name__ == "__main__":

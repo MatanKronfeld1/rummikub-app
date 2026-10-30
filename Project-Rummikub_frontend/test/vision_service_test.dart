@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -152,5 +153,78 @@ void main() {
       'https://serverless.roboflow.com/matan-kronfeld/workflows/rummikub-v1-logic',
       'https://serverless.roboflow.com/infer/workflows/matan-kronfeld/rummikub-v1-logic',
     ]);
+  });
+
+  group('board and rack photos', () {
+    final board = Uint8List(9000)..fillRange(4, 9000, 1);
+    final rack = Uint8List(9000)..fillRange(4, 9000, 2);
+
+    String payloadOf(http.Request request) =>
+        (jsonDecode(request.body)['inputs']['image']['value']) as String;
+
+    test('are uploaded at the same time, not one after the other', () async {
+      final boardValue = base64Encode(board);
+      final pending = <String, Completer<http.Response>>{};
+      final service = VisionService(
+        apiKey: 'test-key',
+        workflowUrl: 'https://serverless.roboflow.com/w/workflows/x',
+        httpClient: MockClient((request) {
+          final done = Completer<http.Response>();
+          pending[payloadOf(request) == boardValue ? 'board' : 'rack'] = done;
+          return done.future;
+        }),
+      );
+
+      final result =
+          service.processBoardAndRackFromBytes(boardImage: board, rackImage: rack);
+      await Future<void>.delayed(Duration.zero);
+
+      // Both requests left before either answered.
+      expect(pending.keys, unorderedEquals(['board', 'rack']));
+
+      pending['rack']!.complete(
+        http.Response(jsonEncode(detectionPayload('Blue7')), 200),
+      );
+      pending['board']!.complete(
+        http.Response(jsonEncode(detectionPayload('Red3')), 200),
+      );
+      final state = await result;
+      expect(state.rack.single.color, 'BLUE');
+      expect(state.rack.single.value, 7);
+      expect(state.board.single.tiles.single.color, 'RED');
+    });
+
+    test('a failure is reported without waiting for the other photo',
+        () async {
+      final rackStillRunning = Completer<http.Response>();
+      final service = VisionService(
+        apiKey: 'test-key',
+        workflowUrl: 'https://serverless.roboflow.com/w/workflows/x',
+        maxAttempts: 1,
+        httpClient: MockClient((request) {
+          return payloadOf(request) == base64Encode(board)
+              ? Future.value(http.Response('{"error":"bad key"}', 401))
+              : rackStillRunning.future;
+        }),
+      );
+
+      await expectLater(
+        service.processBoardAndRackFromBytes(
+          boardImage: board,
+          rackImage: rack,
+        ),
+        throwsA(
+          isA<VisionException>().having(
+            (e) => e.statusCode,
+            'statusCode',
+            401,
+          ),
+        ),
+      );
+
+      // The abandoned request finishing later must not surface anywhere.
+      rackStillRunning.complete(http.Response('{}', 500));
+      await Future<void>.delayed(Duration.zero);
+    });
   });
 }

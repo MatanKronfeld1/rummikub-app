@@ -15,29 +15,45 @@ MIN_CLS_CONF        default 0.35; below this a tile is labelled "Unknown"
 from __future__ import annotations
 
 import base64
+import importlib.util
+import logging
 import os
-import sys
 from functools import lru_cache
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Crop helpers
 # ---------------------------------------------------------------------------
-# tools/tile_crops.py lives one level above the backend package.  Add its
-# parent to sys.path so we can import it directly.  If the backend is ever
-# packaged separately, copy the three helpers inline instead.
-_TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
-if str(_TOOLS_DIR) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_DIR))
+# The crop geometry is defined once, in tools/tile_crops.py, and shared with
+# training, evaluation and auto-labeling. Inside the repo it is loaded from
+# that file by path (no sys.path changes). The Docker image is built from this
+# folder only, so the same math is inlined in _workflow_view_inline() and
+# tests/test_local_pipeline_crops.py checks both give identical pixels.
+_TILE_CROPS_PATH = Path(__file__).resolve().parent.parent / "tools" / "tile_crops.py"
 
-try:
-    from tile_crops import workflow_view, CLS_SIZE  # type: ignore[import]
-    _HAVE_TILE_CROPS = True
-except ImportError:  # running without the tools/ tree (e.g. Docker)
-    _HAVE_TILE_CROPS = False
-    CLS_SIZE = 224
+
+def _load_tile_crops() -> ModuleType | None:
+    if not _TILE_CROPS_PATH.is_file():
+        logger.info("%s not found; using the inlined crop geometry.", _TILE_CROPS_PATH)
+        return None
+    spec = importlib.util.spec_from_file_location("tile_crops", _TILE_CROPS_PATH)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_TILE_CROPS = _load_tile_crops()
+_HAVE_TILE_CROPS = _TILE_CROPS is not None
+CLS_SIZE = _TILE_CROPS.CLS_SIZE if _TILE_CROPS else 224
+# 5 % per side, the Roboflow Detection Offset step (10 % in total).
+_MARGIN_PER_SIDE = _TILE_CROPS.MARGIN_PER_SIDE if _TILE_CROPS else 0.05
 
 DET_SIZE = 1024
 DET_CONF = 0.25
@@ -124,19 +140,24 @@ def _crop_tile_pil(img_bgr: np.ndarray, det: dict):
     x2 = x + w / 2
     y2 = y + h / 2
 
-    if _HAVE_TILE_CROPS:
-        return workflow_view(pil_img, (x1, y1, x2, y2), CLS_SIZE)
+    if _TILE_CROPS is not None:
+        return _TILE_CROPS.workflow_view(pil_img, (x1, y1, x2, y2), CLS_SIZE)
+    return _workflow_view_inline(pil_img, (x1, y1, x2, y2), CLS_SIZE)
 
-    # Inline fallback: same math as tile_crops.workflow_view
-    margin = 0.05  # 5 % per side == 10 % total
-    dx, dy = (x2 - x1) * margin, (y2 - y1) * margin
+
+def _workflow_view_inline(pil_img, box_xyxy: tuple[float, float, float, float], size: int):
+    """Same math as tools/tile_crops.workflow_view, for builds without tools/."""
+    from PIL import Image  # type: ignore[import]
+
+    x1, y1, x2, y2 = box_xyxy
+    dx, dy = (x2 - x1) * _MARGIN_PER_SIDE, (y2 - y1) * _MARGIN_PER_SIDE
     left = max(0, round(x1 - dx))
-    top  = max(0, round(y1 - dy))
-    right  = min(pil_img.width,  round(x2 + dx))
+    top = max(0, round(y1 - dy))
+    right = min(pil_img.width, round(x2 + dx))
     bottom = min(pil_img.height, round(y2 + dy))
     right, bottom = max(right, left + 1), max(bottom, top + 1)
     crop = pil_img.crop((left, top, right, bottom))
-    return crop.convert("RGB").resize((CLS_SIZE, CLS_SIZE), Image.Resampling.BILINEAR)
+    return crop.convert("RGB").resize((size, size), Image.Resampling.BILINEAR)
 
 
 def _pil_to_bgr(pil_img) -> np.ndarray:

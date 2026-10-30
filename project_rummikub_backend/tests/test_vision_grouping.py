@@ -1,4 +1,6 @@
+import json
 import math
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -358,7 +360,8 @@ def test_touching_parallel_rows_are_split_by_perpendicular_clustering():
 
     result = group_vision_detections(payload)
 
-    assert result["metadata"]["board_row_count"] == 1  # one touching component
+    # Stacked rows sit ~1.5 pitches apart, so they are never linked at all.
+    assert result["metadata"]["board_row_count"] == 2
     melds = result["board_melds"]
     assert len(melds) == 2
     assert [m["detection_ids"] for m in melds] == [
@@ -367,3 +370,37 @@ def test_touching_parallel_rows_are_split_by_perpendicular_clustering():
     ]
     assert all(m["type"] == "RUN" and m["is_valid"] for m in melds)
     assert all("angle_degrees" in m for m in melds)
+
+
+# Shared with the app's test/vision_parser_test.dart.
+_BOARD_CASES = json.loads(
+    (Path(__file__).parent / "fixtures" / "board_grouping_cases.json").read_text(
+        encoding="utf-8"
+    )
+)["cases"]
+
+
+@pytest.mark.parametrize("case", _BOARD_CASES, ids=[c["name"] for c in _BOARD_CASES])
+def test_board_grouping_fixture(case):
+    labels = {d["detection_id"]: d["class"] for d in case["detections"]}
+    result = group_vision_detections(
+        case["detections"], options=GroupingOptions(rack_boundary_y=10_000)
+    )
+
+    groups = sorted(
+        sorted(labels[i] for i in meld["detection_ids"])
+        for meld in result["board_melds"]
+    )
+    assert groups == sorted(sorted(g) for g in case["expected_groups"])
+
+
+def test_valid_melds_from_guardrails_are_valid_runs_and_groups():
+    case = next(
+        c for c in _BOARD_CASES if c["name"] == "touching_run_and_group_on_one_line"
+    )
+    result = group_vision_detections(
+        case["detections"], options=GroupingOptions(rack_boundary_y=10_000)
+    )
+
+    assert sorted(m["type"] for m in result["board_melds"]) == ["GROUP", "RUN"]
+    assert all(m["is_valid"] for m in result["board_melds"])

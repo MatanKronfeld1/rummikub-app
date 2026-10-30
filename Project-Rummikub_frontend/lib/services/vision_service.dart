@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -8,9 +7,9 @@ import 'package:image_picker/image_picker.dart';
 
 import '../config/roboflow_config.dart';
 import '../config/solver_config.dart';
-import '../debug_log.dart';
 import '../models/models.dart';
 import 'roboflow_debug_dump.dart';
+import 'vision_image.dart';
 import 'vision_parser.dart';
 
 /// User-visible failure from the Roboflow workflow client.
@@ -38,10 +37,9 @@ class VisionService {
         _apiKey = apiKey ?? RoboflowConfig.apiKey,
         _workflowUrl = workflowUrl ??
             (kIsWeb ? SolverConfig.visionUrl : RoboflowConfig.runUrl),
-        _fallbackUrl = fallbackUrl ??
-            (kIsWeb ? '' : RoboflowConfig.inferFallbackUrl),
-        _confidenceCutoff =
-            confidenceCutoff ?? RoboflowConfig.confidenceCutoff;
+        _fallbackUrl =
+            fallbackUrl ?? (kIsWeb ? '' : RoboflowConfig.inferFallbackUrl),
+        _confidenceCutoff = confidenceCutoff ?? RoboflowConfig.confidenceCutoff;
 
   final http.Client _client;
   final String _apiKey;
@@ -53,6 +51,15 @@ class VisionService {
 
   final List<String> lastSummaries = [];
   RoboflowDebugDump? lastDump;
+
+  /// Roboflow itself needs the key. The backend proxy (web, or a
+  /// `ROBOFLOW_WORKFLOW_URL` pointing at it) supplies its own key, or runs the
+  /// local pipeline and needs none.
+  bool get requiresApiKey =>
+      Uri.tryParse(_workflowUrl)?.host.endsWith('roboflow.com') ?? true;
+
+  /// False when recognition cannot work at all with this build's settings.
+  bool get isConfigured => !requiresApiKey || _apiKey.isNotEmpty;
 
   /// Runs the workflow on [boardImage] and [rackImage], then builds a [GameState].
   Future<GameState> processBoardAndRack({
@@ -70,20 +77,36 @@ class VisionService {
     required Uint8List rackImage,
   }) async {
     lastSummaries.clear();
-    final boardRaw = await runWorkflow(boardImage);
-    final rackRaw = await runWorkflow(rackImage);
-    final boardAll = VisionParser.detectionsFromResponse(
-      boardRaw,
-      confidenceCutoff: _confidenceCutoff,
+    // The photos are independent, so both uploads and both inferences
+    // overlap: wall time is the slower photo, not the sum. eagerError reports
+    // the first failure at once instead of waiting out the other retries.
+    final raw = await Future.wait<dynamic>(
+      [runWorkflow(boardImage), runWorkflow(rackImage)],
+      eagerError: true,
     );
-    final tableRawCount = VisionParser.lastRawCount;
-    final rackAll = VisionParser.detectionsFromResponse(
-      rackRaw,
-      confidenceCutoff: _confidenceCutoff,
-    );
+    final boardRaw = raw[0];
+    final rackRaw = raw[1];
+    final List<TileDetection> boardAll;
+    final List<TileDetection> rackAll;
+    final int tableRawCount;
+    try {
+      boardAll = VisionParser.detectionsFromResponse(
+        boardRaw,
+        confidenceCutoff: _confidenceCutoff,
+      );
+      tableRawCount = VisionParser.lastRawCount;
+      rackAll = VisionParser.detectionsFromResponse(
+        rackRaw,
+        confidenceCutoff: _confidenceCutoff,
+      );
+    } on FormatException catch (error) {
+      throw VisionException(error.message);
+    }
+    // The dump references the photos instead of copying them: the bytes that
+    // were sent exist once, in the capture screen.
     lastDump = RoboflowDebugDump(
-      tableJpeg: Uint8List.fromList(boardImage),
-      rackJpeg: Uint8List.fromList(rackImage),
+      tableJpeg: boardImage,
+      rackJpeg: rackImage,
       tableJson: workflowJsonForExport(boardRaw),
       rackJson: workflowJsonForExport(rackRaw),
       unfilteredSummary:
@@ -137,52 +160,20 @@ class VisionService {
 
   /// Posts one image to the workflow endpoint with timeout and retries.
   Future<dynamic> runWorkflow(Uint8List imageBytes) async {
-    if (_apiKey.isEmpty) {
+    if (!isConfigured) {
       throw const VisionException(
-        'Missing Roboflow API key. Run with --dart-define=ROBOFLOW_API_KEY=your_key',
+        'Tile recognition is not set up in this build (missing Roboflow API key). '
+        'Enter the tiles manually, or rebuild with --dart-define=ROBOFLOW_API_KEY=your_key.',
       );
     }
     if (imageBytes.isEmpty) {
       throw const VisionException('The selected photo could not be read.');
     }
-    if (imageBytes.length < 8000) {
+    if (imageBytes.length < minVisionPhotoBytes) {
       throw const VisionException(
         'That photo was empty or too small to recognize. Try again, or pick from the gallery.',
       );
     }
-
-    // #region agent log
-    final inspectLimit =
-        imageBytes.length < 65536 ? imageBytes.length : 65536;
-    var hasExifAscii = false;
-    for (var i = 0; i < inspectLimit - 4; i++) {
-      if (imageBytes[i] == 0x45 &&
-          imageBytes[i + 1] == 0x78 &&
-          imageBytes[i + 2] == 0x69 &&
-          imageBytes[i + 3] == 0x66) {
-        hasExifAscii = true;
-        break;
-      }
-    }
-    debugLog(
-      location: 'vision_service.dart:runWorkflow',
-      message: 'image bytes before encode',
-      hypothesisId: 'H1',
-      data: {
-        'byteLen': imageBytes.length,
-        'isJpeg': imageBytes.length >= 2 &&
-            imageBytes[0] == 0xFF &&
-            imageBytes[1] == 0xD8,
-        'hasExifAscii': hasExifAscii,
-        'magic': imageBytes
-            .take(4)
-            .map((b) => b.toRadixString(16).padLeft(2, '0'))
-            .join(),
-        'cutoff': _confidenceCutoff,
-        'viaProxy': kIsWeb,
-      },
-    );
-    // #endregion
 
     final payload = jsonEncode({
       'api_key': _apiKey,
@@ -198,18 +189,6 @@ class VisionService {
     Object? lastError;
     var url = _workflowUrl;
     var triedFallback = false;
-    // #region agent log
-    debugLog(
-      location: 'vision_service.dart:runWorkflow',
-      message: 'workflow request start',
-      hypothesisId: 'H5',
-      data: {
-        'urlHost': Uri.parse(url).host,
-        'urlPath': Uri.parse(url).path,
-        'viaProxy': kIsWeb,
-      },
-    );
-    // #endregion
 
     for (var attempt = 0; attempt < maxAttempts; attempt++) {
       try {
@@ -221,21 +200,6 @@ class VisionService {
             )
             .timeout(timeout);
         lastResponse = response;
-        // #region agent log
-        debugLog(
-          location: 'vision_service.dart:runWorkflow',
-          message: 'workflow HTTP response',
-          hypothesisId: 'H5',
-          data: {
-            'status': response.statusCode,
-            'urlHost': Uri.parse(url).host,
-            'urlPath': Uri.parse(url).path,
-            'viaProxy': kIsWeb,
-            'bodyChars': response.body.length,
-            'attempt': attempt,
-          },
-        );
-        // #endregion
 
         if (response.statusCode == 404 &&
             !triedFallback &&
@@ -257,42 +221,14 @@ class VisionService {
         rethrow;
       } on TimeoutException catch (error) {
         lastError = error;
-        // #region agent log
-        debugLog(
-          location: 'vision_service.dart:runWorkflow',
-          message: 'workflow timeout',
-          hypothesisId: 'H4',
-          data: {'attempt': attempt, 'error': error.toString()},
-        );
-        // #endregion
         if (attempt >= maxAttempts - 1) break;
         await Future<void>.delayed(_backoff(attempt));
       } on http.ClientException catch (error) {
         lastError = error;
-        // #region agent log
-        debugLog(
-          location: 'vision_service.dart:runWorkflow',
-          message: 'workflow client exception',
-          hypothesisId: 'H5',
-          data: {'attempt': attempt, 'error': error.toString()},
-        );
-        // #endregion
         if (attempt >= maxAttempts - 1) break;
         await Future<void>.delayed(_backoff(attempt));
       } catch (error) {
         lastError = error;
-        // #region agent log
-        debugLog(
-          location: 'vision_service.dart:runWorkflow',
-          message: 'workflow unexpected exception',
-          hypothesisId: 'H5',
-          data: {
-            'attempt': attempt,
-            'type': error.runtimeType.toString(),
-            'error': error.toString(),
-          },
-        );
-        // #endregion
         if (attempt >= maxAttempts - 1) break;
         await Future<void>.delayed(_backoff(attempt));
       }
@@ -382,9 +318,7 @@ class VisionService {
   }
 
   static bool _shouldRetryStatus(int statusCode) {
-    return statusCode == 408 ||
-        statusCode == 429 ||
-        statusCode >= 500;
+    return statusCode == 408 || statusCode == 429 || statusCode >= 500;
   }
 
   static Duration _backoff(int attempt) {

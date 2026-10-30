@@ -66,6 +66,7 @@ def generate_candidates(
     game_state: GameState,
     *,
     max_candidates: int = DEFAULT_MAX_CANDIDATES,
+    max_run_length: int = _MAX_TILE_VALUE,
 ) -> list[Candidate]:
     """Enumerate legal sets that can be formed from board tiles plus rack tiles.
 
@@ -76,6 +77,9 @@ def generate_candidates(
     2. Every legal GROUP
     3. RUNs that use at least one rack tile
     4. Remaining RUNs
+
+    ``max_run_length`` limits generated runs (not original board sets). The
+    solver passes 5: any longer run splits into two legal runs of 3+ tiles.
     """
     board_tiles = [tile for rummikub_set in game_state.board for tile in rummikub_set.tiles]
     rack_tiles = list(game_state.rack)
@@ -84,7 +88,7 @@ def generate_candidates(
 
     original = _candidates_from_board(game_state.board)
     groups = _generate_groups(pool)
-    runs = _generate_runs(pool)
+    runs = _generate_runs(pool, max_run_length)
 
     rack_runs = [candidate for candidate in runs if candidate.uses_any(rack_ids)]
     other_runs = [candidate for candidate in runs if not candidate.uses_any(rack_ids)]
@@ -232,7 +236,7 @@ def _emit_groups(
     return found
 
 
-def _generate_runs(pool: list[Tile]) -> list[Candidate]:
+def _generate_runs(pool: list[Tile], max_length: int = _MAX_TILE_VALUE) -> list[Candidate]:
     """Same color, consecutive values in 1–13. Jokers fill holes by position."""
     jokers, by_color = _partition_pool(pool)
     candidates: list[Candidate] = []
@@ -241,7 +245,8 @@ def _generate_runs(pool: list[Tile]) -> list[Candidate]:
         if not ranks and not jokers:
             continue
         for start in range(_MIN_TILE_VALUE, _MAX_TILE_VALUE - _MIN_SET_SIZE + 2):
-            for length in range(_MIN_SET_SIZE, _MAX_TILE_VALUE - start + 2):
+            longest = min(max_length, _MAX_TILE_VALUE - start + 1)
+            for length in range(_MIN_SET_SIZE, longest + 1):
                 values = list(range(start, start + length))
                 candidates.extend(_run_assignments(values, ranks, jokers))
                 if len(candidates) >= _RUN_ENUMERATION_CAP:

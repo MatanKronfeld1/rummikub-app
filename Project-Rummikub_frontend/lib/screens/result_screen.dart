@@ -13,15 +13,20 @@ class ResultScreen extends StatefulWidget {
     required this.beforeState,
     required this.afterState,
     required this.tilesDropped,
+    this.executionTimeMs,
     this.algorithmScore,
     this.challengeId,
     this.algorithmAfterState,
     this.readOnly = false,
+    this.firebaseService,
   });
 
   final GameState beforeState;
   final GameState afterState;
   final int tilesDropped;
+
+  /// Solver time reported by `/solve`; null for arena attempts and history.
+  final int? executionTimeMs;
   final int? algorithmScore;
 
   /// When set, this is a human arena attempt (not a solver publish).
@@ -31,6 +36,9 @@ class ResultScreen extends StatefulWidget {
   final GameState? algorithmAfterState;
   final bool readOnly;
 
+  /// Test seam; defaults to the Firestore-backed service.
+  final FirebaseService? firebaseService;
+
   @override
   State<ResultScreen> createState() => _ResultScreenState();
 }
@@ -39,10 +47,12 @@ class _ResultScreenState extends State<ResultScreen> {
   String? _saveError;
   bool _saved = false;
 
-  Set<String> get _movedFromRack {
-    final beforeRack = widget.beforeState.rack.map((t) => t.id).toSet();
+  /// Rack tiles that ended up on the board, in rack order.
+  List<Tile> get _placedFromRack {
     final afterRack = widget.afterState.rack.map((t) => t.id).toSet();
-    return beforeRack.difference(afterRack);
+    return widget.beforeState.rack
+        .where((tile) => !afterRack.contains(tile.id))
+        .toList();
   }
 
   @override
@@ -55,7 +65,7 @@ class _ResultScreenState extends State<ResultScreen> {
 
   Future<void> _save() async {
     try {
-      final firebase = FirebaseService();
+      final firebase = widget.firebaseService ?? FirebaseService();
       final challengeId = widget.challengeId;
       if (challengeId != null) {
         await firebase.saveArenaAttempt(
@@ -78,9 +88,15 @@ class _ResultScreenState extends State<ResultScreen> {
       }
     } catch (error) {
       if (mounted) {
-        setState(() => _saveError = error.toString());
+        setState(() => _saveError = _readable(error));
       }
     }
+  }
+
+  static String _readable(Object error) {
+    final text = error.toString();
+    const prefix = 'Exception: ';
+    return text.startsWith(prefix) ? text.substring(prefix.length) : text;
   }
 
   String get _headline {
@@ -96,13 +112,19 @@ class _ResultScreenState extends State<ResultScreen> {
       }
       return 'Under the algorithm score.';
     }
+    if (widget.tilesDropped == 0) {
+      return 'No legal move this turn.';
+    }
     return 'Solution';
   }
 
   @override
   Widget build(BuildContext context) {
-    final moved = _movedFromRack;
+    final theme = Theme.of(context);
+    final placed = _placedFromRack;
+    final moved = placed.map((tile) => tile.id).toSet();
     final algorithmScore = widget.algorithmScore;
+    final executionTimeMs = widget.executionTimeMs;
 
     return Scaffold(
       appBar: AppBar(
@@ -113,14 +135,19 @@ class _ResultScreenState extends State<ResultScreen> {
         children: [
           Text(
             _headline,
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
+            style: theme.textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
           ),
           const SizedBox(height: 8),
           Text('Tiles dropped from rack: ${widget.tilesDropped}'),
-          if (algorithmScore != null)
-            Text('Algorithm score: $algorithmScore'),
+          if (executionTimeMs != null) Text('Solved in $executionTimeMs ms'),
+          if (algorithmScore != null) Text('Algorithm score: $algorithmScore'),
+          if (!widget.readOnly && !_saved && _saveError == null)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text('Saving to history...'),
+            ),
           if (!widget.readOnly && _saved)
             Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -135,20 +162,37 @@ class _ResultScreenState extends State<ResultScreen> {
               padding: const EdgeInsets.only(top: 8),
               child: Text(
                 'Could not save: $_saveError',
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+                style: TextStyle(color: theme.colorScheme.error),
               ),
             ),
           const SizedBox(height: 24),
-          Text(
-            'After',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
+          Text('Placed from your rack', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 8),
+          if (placed.isEmpty)
+            Text(
+              widget.tilesDropped == 0 && widget.algorithmScore == null
+                  ? 'None of your tiles fit on the board. Keep them and draw a tile.'
+                  : 'No rack tiles were placed.',
+              style: theme.textTheme.bodyMedium,
+            )
+          else
+            Wrap(
+              key: const ValueKey('placed-from-rack'),
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final tile in placed)
+                  TileView(tile: tile, highlighted: true),
+              ],
+            ),
+          const SizedBox(height: 24),
+          Text('After', style: theme.textTheme.titleLarge),
           const SizedBox(height: 8),
           Text(
             moved.isEmpty
-                ? 'No rack tiles were placed.'
-                : 'Highlighted tiles came from the rack.',
-            style: Theme.of(context).textTheme.bodySmall,
+                ? 'The board is unchanged.'
+                : 'Highlighted tiles came from your rack.',
+            style: theme.textTheme.bodySmall,
           ),
           const SizedBox(height: 8),
           GameBoardView(
@@ -156,22 +200,19 @@ class _ResultScreenState extends State<ResultScreen> {
             highlightedTileIds: moved,
           ),
           const SizedBox(height: 32),
-          Text(
-            'Before',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
+          Text('Before', style: theme.textTheme.titleLarge),
           const SizedBox(height: 8),
           GameBoardView(gameState: widget.beforeState),
           if (widget.algorithmAfterState != null) ...[
             const SizedBox(height: 32),
             Text(
               'Algorithm solution',
-              style: Theme.of(context).textTheme.titleLarge,
+              style: theme.textTheme.titleLarge,
             ),
             const SizedBox(height: 8),
             Text(
               'The board after the solver move (${widget.algorithmScore ?? 0} tiles dropped).',
-              style: Theme.of(context).textTheme.bodySmall,
+              style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 8),
             GameBoardView(gameState: widget.algorithmAfterState!),
