@@ -61,6 +61,62 @@ void main() {
     expect(result.optimalState.board.single.tiles.map((t) => t.id), ['r1', 'r2', 'r3']);
   });
 
+  group('solution_steps', () {
+    Future<SolveResult> solveWith(Map<String, dynamic> extraOptimal) {
+      final api = service((_) async => http.Response(
+            jsonEncode({
+              'original_state': state.toJson(),
+              'optimal_state': {
+                'board': [],
+                'tiles_used_from_rack': 0,
+                'remaining_rack': [],
+                ...extraOptimal,
+              },
+              'is_valid': true,
+              'execution_time_ms': 1,
+            }),
+            200,
+          ));
+      return api.solveBoard(state);
+    }
+
+    test('are parsed into SolutionStep objects', () async {
+      final result = await solveWith({
+        'solution_steps': [
+          {
+            'stepIndex': 0,
+            'type': 'PLACE_FROM_RACK',
+            'sourceSetId': null,
+            'targetSetId': 'new',
+            'tiles': [state.rack.first.toJson()],
+            'description': 'Place red 1',
+          },
+        ],
+      });
+
+      final step = result.solutionSteps.single;
+      expect(step.type, SolutionStepType.placeFromRack);
+      expect(step.targetSetId, 'new');
+      expect(step.tiles.map((t) => t.id), ['r1']);
+      expect(step.description, 'Place red 1');
+    });
+
+    test('are empty when the backend omits them', () async {
+      expect((await solveWith({})).solutionSteps, isEmpty);
+    });
+
+    test('a malformed list does not fail the solve', () async {
+      final result = await solveWith({
+        'solution_steps': [
+          {'stepIndex': 0, 'type': 'NOT_A_STEP', 'tiles': []},
+        ],
+      });
+
+      expect(result.solutionSteps, isEmpty);
+      expect(result.isValid, isTrue);
+    });
+  });
+
   test('a rejected board shows the backend reason', () async {
     final api = service((_) async => http.Response(
           jsonEncode({'detail': 'Set 1 (id=bad) is invalid: a set must contain at least 3 tiles (found 2).'}),

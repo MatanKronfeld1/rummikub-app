@@ -2,11 +2,13 @@ import base64
 import json
 import logging
 import os
+import sqlite3
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +22,21 @@ try:
 except ImportError:
     _LOCAL_PIPELINE_AVAILABLE = False
 
-from models import GameState, SolveResponse
+import db
+from models import (
+    ChallengeResult,
+    ChallengeSubmission,
+    ChallengeSummary,
+    EndGameRequest,
+    EndGameResponse,
+    GameState,
+    LeaderboardEntry,
+    Set as RummikubSet,
+    SolveResponse,
+    TurnRequest,
+    TurnResponse,
+)
+from solution_steps import compute_solution_steps
 from solver import solve_rummikub
 from validator import validate_board, validate_tile_ids
 from vision_grouping import GroupingOptions, group_vision_detections
@@ -53,8 +69,167 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@contextmanager
+def _db() -> Iterator[sqlite3.Connection]:
+    conn = db.connect()
+    try:
+        db.init_db(conn)
+        yield conn
+    finally:
+        conn.close()
+
+
+@app.post("/game/turn", response_model=TurnResponse)
+def game_turn(turn: TurnRequest) -> TurnResponse:
+    with _db() as conn:
+        if turn.session_id is None:
+            session_id = db.create_session(conn, turn.user_id)
+        else:
+            session = db.get_session(conn, turn.session_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="Unknown game session.")
+            if session["status"] != "active":
+                raise HTTPException(status_code=409, detail="Game session has ended.")
+            session_id = turn.session_id
+        turn_index = db.next_turn_index(conn, session_id)
+        db.record_turn(
+            conn,
+            session_id,
+            turn_index,
+            [s.model_dump(mode="json") for s in turn.board],
+            [t.model_dump(mode="json") for t in turn.rack],
+            turn.move_applied,
+        )
+    return TurnResponse(session_id=session_id, turn_index=turn_index)
+
+
+@app.post("/game/end", response_model=EndGameResponse)
+def game_end(request: EndGameRequest) -> EndGameResponse:
+    with _db() as conn:
+        if db.get_session(conn, request.session_id) is None:
+            raise HTTPException(status_code=404, detail="Unknown game session.")
+        db.end_session(conn, request.session_id)
+    return EndGameResponse(session_id=request.session_id, status="packed")
+
+
+def _publish_challenge(
+    session_id: str, turn_index: Optional[int], game_state: GameState, ai_score: int
+) -> None:
+    """Auto-publish a solved position as a community challenge. Never fails the solve."""
+    if not game_state.rack:
+        return
+    try:
+        with _db() as conn:
+            session = db.get_session(conn, session_id)
+            if session is None or session["status"] != "active":
+                return
+            if turn_index is None:
+                # The solve belongs to the latest turn recorded for the session.
+                turn_index = max(db.next_turn_index(conn, session_id) - 1, 0)
+            db.create_challenge(
+                conn,
+                [s.model_dump(mode="json") for s in game_state.board],
+                [t.model_dump(mode="json") for t in game_state.rack],
+                ai_score,
+                session_id,
+                turn_index,
+            )
+    except sqlite3.IntegrityError:
+        logger.info("Challenge for session %s already published; skipping", session_id)
+    except sqlite3.Error:
+        logger.exception("Could not publish challenge for session %s", session_id)
+
+
+@app.get("/challenge/list", response_model=list[ChallengeSummary])
+def challenge_list() -> list[ChallengeSummary]:
+    with _db() as conn:
+        rows = db.list_challenges(conn)
+    return [
+        ChallengeSummary(
+            id=row["id"],
+            board=json.loads(row["initial_board_json"]),
+            rack=json.loads(row["initial_rack_json"]),
+            ai_score=row["ai_score"],
+        )
+        for row in rows
+    ]
+
+
+def _count_placed_rack_tiles(initial: GameState, final_board: list[RummikubSet]) -> int:
+    """Check a submitted board is a legal result for ``initial``; return how many rack tiles it places.
+
+    Every tile that started on the board must still be on it, and every other tile must come
+    from the rack, unchanged.
+    """
+    is_valid, error_message = validate_board(final_board)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_message)
+    final_tiles = [tile for s in final_board for tile in s.tiles]
+    if len({tile.id for tile in final_tiles}) != len(final_tiles):
+        raise HTTPException(status_code=400, detail="A tile appears more than once on the board.")
+
+    board_tiles = {tile.id: tile for s in initial.board for tile in s.tiles}
+    rack_tiles = {tile.id: tile for tile in initial.rack}
+    final_by_id = {tile.id: tile for tile in final_tiles}
+    missing = board_tiles.keys() - final_by_id.keys()
+    if missing:
+        raise HTTPException(status_code=400, detail="Tiles that were on the board cannot be removed.")
+    placed = 0
+    for tile_id, tile in final_by_id.items():
+        original = board_tiles.get(tile_id) or rack_tiles.get(tile_id)
+        if original is None or (original.color, original.value) != (tile.color, tile.value):
+            raise HTTPException(status_code=400, detail=f"Tile {tile_id} is not part of this challenge.")
+        if tile_id in rack_tiles:
+            placed += 1
+    return placed
+
+
+@app.post("/challenge/{challenge_id}/submit", response_model=ChallengeResult)
+def challenge_submit(challenge_id: str, submission: ChallengeSubmission) -> ChallengeResult:
+    with _db() as conn:
+        challenge = db.get_challenge(conn, challenge_id)
+        if challenge is None:
+            raise HTTPException(status_code=404, detail="Unknown challenge.")
+        initial = GameState(
+            board=json.loads(challenge["initial_board_json"]),
+            rack=json.loads(challenge["initial_rack_json"]),
+        )
+        human_placed = _count_placed_rack_tiles(initial, submission.board)
+        try:
+            score = db.record_submission(
+                conn, challenge_id, submission.user_id, human_placed, challenge["ai_score"]
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="Challenge already submitted by this user.")
+    return ChallengeResult(
+        challenge_id=challenge_id,
+        human_placed=human_placed,
+        ai_placed=challenge["ai_score"],
+        score=score,
+    )
+
+
+@app.get("/leaderboard", response_model=list[LeaderboardEntry])
+def leaderboard() -> list[LeaderboardEntry]:
+    with _db() as conn:
+        rows = db.get_leaderboard(conn)
+    return [
+        LeaderboardEntry(
+            rank=rank,
+            user_id=row["user_id"],
+            total_points=row["total_points"],
+            challenges_won=row["challenges_won"],
+        )
+        for rank, row in enumerate(rows, start=1)
+    ]
+
+
 @app.post("/solve", response_model=SolveResponse)
-def solve(game_state: GameState) -> SolveResponse:
+def solve(
+    game_state: GameState,
+    session_id: Optional[str] = None,
+    turn_index: Optional[int] = None,
+) -> SolveResponse:
     for is_valid, error_message in (
         validate_board(game_state.board),
         validate_tile_ids(game_state),
@@ -64,7 +239,13 @@ def solve(game_state: GameState) -> SolveResponse:
 
     start = time.perf_counter()
     optimal_state = solve_rummikub(game_state)
+    optimal_state.solution_steps = compute_solution_steps(
+        game_state.board, game_state.rack, optimal_state.board
+    )
     elapsed_ms = int((time.perf_counter() - start) * 1000)
+
+    if session_id is not None:
+        _publish_challenge(session_id, turn_index, game_state, optimal_state.tiles_used_from_rack)
 
     return SolveResponse(
         original_state=game_state,

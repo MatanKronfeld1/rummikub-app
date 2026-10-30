@@ -1,6 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../providers/game_provider.dart';
 import '../services/firebase_service.dart';
 
 /// Account details, display name, and sign out.
@@ -30,6 +32,8 @@ class _AccountScreenState extends State<AccountScreen> {
   /// navigator's home for the login page, so pop back to it first or this page
   /// would stay on top of the login.
   Future<void> _signOut() async {
+    // Leaving ends the game, and the next account must not see its tiles.
+    context.read<GameProvider>().endGame();
     Navigator.of(context).popUntil((route) => route.isFirst);
     await FirebaseAuth.instance.signOut();
   }

@@ -12,7 +12,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:rummikub_assistant/models/models.dart';
 import 'package:rummikub_assistant/providers/game_provider.dart';
-import 'package:rummikub_assistant/screens/arena_list_screen.dart';
+import 'package:rummikub_assistant/screens/community_challenge_screen.dart';
 import 'package:rummikub_assistant/screens/capture_screen.dart';
 import 'package:rummikub_assistant/screens/correction_screen.dart';
 import 'package:rummikub_assistant/services/roboflow_debug_dump.dart';
@@ -611,7 +611,49 @@ void main() {
 
     await tap(tester, 'community-challenge');
     await tester.pumpAndSettle();
-    expect(find.byType(ArenaListScreen), findsOneWidget);
+    expect(find.byType(CommunityChallengeScreen), findsOneWidget);
+  });
+
+  testWidgets('End game resets the screen to fresh tile recognition',
+      (tester) async {
+    await pumpScreen(tester);
+    await pick(tester, 'table', tablePhoto);
+    await pick(tester, 'rack', rackPhoto);
+    provider.updateGameState(recognizedState());
+    expect(byKey('table-preview'), findsOneWidget);
+
+    await openDrawer(tester);
+    await tap(tester, 'end-game');
+    await tester.pumpAndSettle();
+
+    expect(byKey('table-preview'), findsNothing);
+    expect(byKey('rack-preview'), findsNothing);
+    expect(byKey('start-over'), findsNothing);
+    expect(provider.gameState.board, isEmpty);
+    expect(provider.gameState.rack, isEmpty);
+    expect(enabled(tester, 'table-gallery'), isTrue);
+    expect(enabled(tester, 'rack-gallery'), isFalse);
+    expect(enabled(tester, 'recognize'), isFalse);
+  });
+
+  testWidgets('End game on the correction screen returns to a fresh capture',
+      (tester) async {
+    await pumpScreen(tester);
+    await pick(tester, 'table', tablePhoto);
+    await pick(tester, 'rack', rackPhoto);
+    vision.respond = () async => recognizedState();
+    await tap(tester, 'recognize');
+    await tester.pumpAndSettle();
+    expect(find.byType(CorrectionScreen), findsOneWidget);
+
+    await tester.tap(byKey('end-game'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CorrectionScreen), findsNothing);
+    expect(byKey('table-preview'), findsNothing);
+    expect(byKey('rack-preview'), findsNothing);
+    expect(byKey('capture-notice'), findsNothing);
+    expect(provider.gameState.rack, isEmpty);
   });
 
   testWidgets('the drawer lists every secondary action', (tester) async {
@@ -619,6 +661,7 @@ void main() {
     await openDrawer(tester);
 
     for (final key in [
+      'end-game',
       'manual-entry',
       'community-challenge',
       'nav-history',

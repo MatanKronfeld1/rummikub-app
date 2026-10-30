@@ -51,6 +51,7 @@ void main() {
     GameState? afterState,
     int tilesDropped = 1,
     bool readOnly = false,
+    List<SolutionStep> solutionSteps = const [],
   }) async {
     tester.view.physicalSize = const Size(900, 2600);
     tester.view.devicePixelRatio = 1.0;
@@ -66,6 +67,7 @@ void main() {
             tilesDropped: tilesDropped,
             executionTimeMs: 17,
             readOnly: readOnly,
+            solutionSteps: solutionSteps,
             firebaseService: firebase,
           ),
         ),
@@ -73,6 +75,45 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets('shows the step walkthrough when the solver sent steps',
+      (tester) async {
+    await pumpResult(
+      tester,
+      firebase: FakeFirebaseService(),
+      solutionSteps: [
+        SolutionStep(
+          stepIndex: 0,
+          type: SolutionStepType.placeFromRack,
+          targetSetId: 'reds',
+          tiles: [red(10)],
+          description: 'Place red 10 on the run',
+        ),
+        SolutionStep(
+          stepIndex: 1,
+          type: SolutionStepType.formNewSet,
+          tiles: [red(7)],
+          description: 'Second step',
+        ),
+      ],
+    );
+
+    expect(find.byKey(const ValueKey('solution-steps')), findsOneWidget);
+    expect(find.text('Step 1 of 2'), findsOneWidget);
+    expect(find.text('Place red 10 on the run'), findsOneWidget);
+
+    await tester.tap(find.text('Next Step'));
+    await tester.pump();
+    expect(find.text('Step 2 of 2'), findsOneWidget);
+    expect(find.text('Second step'), findsOneWidget);
+  });
+
+  testWidgets('hides the walkthrough when there are no steps', (tester) async {
+    await pumpResult(tester, firebase: FakeFirebaseService());
+
+    expect(find.byKey(const ValueKey('solution-steps')), findsNothing);
+    expect(find.text('How to get there'), findsNothing);
+  });
 
   testWidgets('shows before, after, placed tiles and the solve time',
       (tester) async {

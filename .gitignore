@@ -38,3 +38,9 @@ backgrounds/
 # Local editor and agent state.
 .cursor/
 .vscode/
+
+# Local SQLite runtime data (sessions, challenges, leaderboard).
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

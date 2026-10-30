@@ -17,7 +17,7 @@ import '../widgets/hover_drawer.dart';
 import '../widgets/photo_zones.dart';
 import '../widgets/table_scene.dart';
 import 'account_screen.dart';
-import 'arena_list_screen.dart';
+import 'community_challenge_screen.dart';
 import 'correction_screen.dart';
 import 'history_screen.dart';
 import 'leaderboard_screen.dart';
@@ -83,6 +83,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
   late final bool _cameraSupported =
       _picker.supportsImageSource(ImageSource.camera);
 
+  late final GameProvider _game;
+  late int _seenEndedGames;
+
   _Photo? _table;
   _Photo? _rack;
   _Activity _activity = _Activity.idle;
@@ -98,6 +101,34 @@ class _CaptureScreenState extends State<CaptureScreen> {
   bool _keyWarningDismissed = false;
 
   bool get _busy => _activity != _Activity.idle;
+
+  @override
+  void initState() {
+    super.initState();
+    _game = context.read<GameProvider>();
+    _seenEndedGames = _game.endedGames;
+    _game.addListener(_onGameChanged);
+  }
+
+  @override
+  void dispose() {
+    _game.removeListener(_onGameChanged);
+    super.dispose();
+  }
+
+  /// A game was ended (here, on the correction screen, or by signing out):
+  /// back to fresh tile recognition.
+  void _onGameChanged() {
+    if (_game.endedGames == _seenEndedGames) return;
+    _seenEndedGames = _game.endedGames;
+    if (!mounted) return;
+    setState(() {
+      _table = null;
+      _rack = null;
+      _error = null;
+      _notice = null;
+    });
+  }
 
   void _setPhoto(_Slot slot, _Photo? photo) {
     if (slot == _Slot.table) {
@@ -263,11 +294,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
       }
 
       setState(() => _activity = _Activity.away);
+      final endedGames = _seenEndedGames;
       await Navigator.push<void>(
         context,
         MaterialPageRoute(builder: (_) => const CorrectionScreen()),
       );
       if (!mounted) return;
+      // The game was ended over there: nothing to come back to.
+      if (_seenEndedGames != endedGames) return;
       // Decision: coming back from the correction screen keeps both photos,
       // so a bad recognition costs one retake instead of two. "Start over"
       // clears them for the next turn.
@@ -304,6 +338,11 @@ class _CaptureScreenState extends State<CaptureScreen> {
     });
   }
 
+  void _endGame() {
+    if (_busy) return;
+    _game.endGame();
+  }
+
   Future<void> _openScreen(WidgetBuilder builder) async {
     if (_busy) return;
     setState(() => _activity = _Activity.away);
@@ -320,7 +359,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     _openScreen((_) => const CorrectionScreen());
   }
 
-  void _openArena() => _openScreen((_) => const ArenaListScreen());
+  void _openArena() => _openScreen((_) => const CommunityChallengeScreen());
 
   void _openHistory() => _openScreen((_) => const HistoryScreen());
 
@@ -373,6 +412,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   List<DrawerEntry> get _drawerEntries => [
+        DrawerEntry(
+          entryKey: const ValueKey('end-game'),
+          icon: Icons.stop_circle_outlined,
+          label: 'End game',
+          onTap: _busy ? null : _endGame,
+        ),
+        const DrawerEntry.divider(),
         DrawerEntry(
           entryKey: const ValueKey('manual-entry'),
           icon: Icons.grid_on_rounded,

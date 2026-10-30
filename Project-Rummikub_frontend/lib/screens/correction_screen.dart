@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -9,7 +10,6 @@ import 'package:provider/provider.dart';
 import '../logic/set_validator.dart';
 import '../models/models.dart';
 import '../providers/game_provider.dart';
-import '../services/api_service.dart';
 import '../services/file_download.dart';
 import '../services/firebase_service.dart';
 import '../services/roboflow_debug_dump.dart';
@@ -22,6 +22,10 @@ import 'result_screen.dart';
 /// Tap the same tile again to edit or delete. Invalid sets get a red border.
 class CorrectionScreen extends StatefulWidget {
   const CorrectionScreen({super.key, this.arenaChallenge});
+
+  /// [ArenaChallenge.source] of puzzles from the backend's `/challenge/list`;
+  /// their submit is scored by the backend and counts toward the leaderboard.
+  static const communitySource = 'community';
 
   final ArenaChallenge? arenaChallenge;
 
@@ -49,7 +53,15 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
     if (_isBusy) return;
     setState(() => _isBusy = true);
     try {
-      final result = await ApiService().solveBoard(currentState);
+      final game = context.read<GameProvider>();
+      final userId = _currentUserId();
+      final turn =
+          userId == null ? null : await game.recordTurn(userId, state: currentState);
+      final result = await game.api.solveBoard(
+        currentState,
+        sessionId: turn?.sessionId,
+        turnIndex: turn?.turnIndex,
+      );
       if (!mounted) return;
       final vision = context.read<GameProvider>().visionOutput;
       if (vision != null) {
@@ -74,6 +86,7 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
             afterState: result.optimalState,
             tilesDropped: result.tilesUsedFromRack,
             executionTimeMs: result.executionTimeMs,
+            solutionSteps: result.solutionSteps,
           ),
         ),
       );
@@ -90,6 +103,20 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
     }
   }
 
+  static String? _currentUserId() {
+    try {
+      return FirebaseAuth.instance.currentUser?.uid;
+    } catch (_) {
+      return null; // Firebase is not initialised (tests).
+    }
+  }
+
+  /// Ends the game and goes back to the capture screen, ready for new photos.
+  void _onEndGame() {
+    context.read<GameProvider>().endGame();
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
   Future<void> _onArenaSubmit(GameState currentState) async {
     if (_isBusy) return;
     final challenge = widget.arenaChallenge!;
@@ -101,16 +128,22 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
       return;
     }
 
-    final initialRackIds =
-        challenge.initialState.rack.map((tile) => tile.id).toSet();
-    final boardIds = currentState.board
-        .expand((set) => set.tiles)
-        .map((tile) => tile.id)
-        .toSet();
-    final score = initialRackIds.where(boardIds.contains).length;
+    final score = rackTilesPlaced(challenge.initialState, currentState);
 
     setState(() => _isBusy = true);
     try {
+      ChallengeResult? verdict;
+      if (challenge.source == CorrectionScreen.communitySource) {
+        final userId = _currentUserId();
+        if (userId == null) {
+          throw Exception('Sign in to submit a community challenge.');
+        }
+        verdict = await context.read<GameProvider>().api.submitChallenge(
+              challengeId: challenge.id,
+              userId: userId,
+              board: currentState,
+            );
+      }
       if (!mounted) return;
       await Navigator.push<void>(
         context,
@@ -122,7 +155,16 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
             algorithmScore: challenge.algorithmScore,
             challengeId: challenge.id,
             algorithmAfterState: challenge.algorithmAfterState,
+            relativeScore: verdict?.score,
           ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_messageFromError(error)),
+          backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
     } finally {
@@ -245,6 +287,13 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
               appBar: AppBar(
                 title: Text(widget.isArena ? 'Challenge' : 'Correct Tiles'),
                 actions: [
+                  if (!widget.isArena)
+                    TextButton.icon(
+                      key: const ValueKey('end-game'),
+                      onPressed: _isBusy ? null : _onEndGame,
+                      icon: const Icon(Icons.stop_circle_outlined),
+                      label: const Text('End game'),
+                    ),
                   IconButton(
                     tooltip: 'Add tile',
                     onPressed: _addTile,

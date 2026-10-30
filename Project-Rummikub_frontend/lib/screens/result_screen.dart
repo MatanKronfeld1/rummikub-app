@@ -5,6 +5,7 @@ import '../models/models.dart';
 import '../providers/game_provider.dart';
 import '../services/firebase_service.dart';
 import '../widgets/rummikub_tiles.dart';
+import '../widgets/solution_steps_viewer.dart';
 
 /// Shows before vs after. Saves history + global moves unless [readOnly].
 class ResultScreen extends StatefulWidget {
@@ -17,6 +18,8 @@ class ResultScreen extends StatefulWidget {
     this.algorithmScore,
     this.challengeId,
     this.algorithmAfterState,
+    this.relativeScore,
+    this.solutionSteps = const [],
     this.readOnly = false,
     this.firebaseService,
   });
@@ -34,6 +37,12 @@ class ResultScreen extends StatefulWidget {
 
   /// Solver output for this puzzle, shown after a community attempt.
   final GameState? algorithmAfterState;
+
+  /// Backend score of a community attempt: tiles placed minus the algorithm's.
+  final int? relativeScore;
+
+  /// Step-by-step moves from `/solve`; the walkthrough is hidden when empty.
+  final List<SolutionStep> solutionSteps;
   final bool readOnly;
 
   /// Test seam; defaults to the Firestore-backed service.
@@ -143,6 +152,12 @@ class _ResultScreenState extends State<ResultScreen> {
           Text('Tiles dropped from rack: ${widget.tilesDropped}'),
           if (executionTimeMs != null) Text('Solved in $executionTimeMs ms'),
           if (algorithmScore != null) Text('Algorithm score: $algorithmScore'),
+          if (widget.relativeScore != null)
+            Text(
+              'Score vs algorithm: ${widget.relativeScore! > 0 ? '+' : ''}'
+              '${widget.relativeScore}',
+              key: const ValueKey('relative-score'),
+            ),
           if (!widget.readOnly && !_saved && _saveError == null)
             const Padding(
               padding: EdgeInsets.only(top: 8),
@@ -185,6 +200,15 @@ class _ResultScreenState extends State<ResultScreen> {
                   TileView(tile: tile, highlighted: true),
               ],
             ),
+          if (widget.solutionSteps.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Text('How to get there', style: theme.textTheme.titleLarge),
+            const SizedBox(height: 8),
+            SolutionStepsViewer(
+              key: const ValueKey('solution-steps'),
+              steps: widget.solutionSteps,
+            ),
+          ],
           const SizedBox(height: 24),
           Text('After', style: theme.textTheme.titleLarge),
           const SizedBox(height: 8),

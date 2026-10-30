@@ -1,24 +1,74 @@
 import 'package:flutter/foundation.dart';
 import '../logic/set_validator.dart';
 import '../models/models.dart';
+import '../services/api_service.dart';
 import '../services/roboflow_debug_dump.dart';
 
 /// Provider for managing the game state throughout the app.
 class GameProvider extends ChangeNotifier {
+  GameProvider({ApiService? api}) : _api = api ?? ApiService();
+
+  final ApiService _api;
+
   GameState _gameState = GameState.empty();
   GameState? _visionOutput;
+  String? _sessionId;
+  int _endedGames = 0;
 
   String? lastVisionDebug;
   RoboflowDebugDump? lastRoboflowDump;
 
   GameState get gameState => _gameState;
 
+  ApiService get api => _api;
+
+  /// Counts finished games, so a screen showing a game's leftovers (photos)
+  /// can tell it has to start fresh.
+  int get endedGames => _endedGames;
+
+  /// The backend game this play-through belongs to; null until its first turn.
+  String? get sessionId => _sessionId;
+
   /// Snapshot from camera/gallery recognition, used for `vision_corrections`.
   GameState? get visionOutput => _visionOutput;
 
   void _commit(GameState next) {
+    final boardCleared = _gameState.board.isNotEmpty && next.board.isEmpty;
     _gameState = SetValidator.classifyGameState(next);
+    if (boardCleared) _closeSession();
     notifyListeners();
+  }
+
+  /// Records the current turn (`POST /game/turn`), opening the backend game on
+  /// the first one. Returns the turn, or null when the backend is unreachable:
+  /// the game keeps working without its history.
+  Future<GameTurn?> recordTurn(String userId, {GameState? state}) async {
+    try {
+      final turn = await _api.recordTurn(
+        userId: userId,
+        state: state ?? _gameState,
+        sessionId: _sessionId,
+      );
+      _sessionId = turn.sessionId;
+      return turn;
+    } on SolverException {
+      return null;
+    }
+  }
+
+  /// Tells the backend the game is over. Never throws.
+  void _closeSession() {
+    final id = _sessionId;
+    _sessionId = null;
+    if (id == null) return;
+    _api.endGame(id).catchError((Object _) {});
+  }
+
+  /// Ends the game: the backend marks it packed and the app goes back to a
+  /// blank state, ready for a fresh recognition.
+  void endGame() {
+    _endedGames++;
+    clearState();
   }
 
   void updateBoard(List<TileSet> newBoard) {
@@ -30,6 +80,7 @@ class GameProvider extends ChangeNotifier {
   }
 
   void clearState() {
+    _closeSession();
     _visionOutput = null;
     lastVisionDebug = null;
     lastRoboflowDump = null;

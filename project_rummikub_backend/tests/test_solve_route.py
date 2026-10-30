@@ -92,5 +92,5 @@ def test_empty_rack_returns_the_state_unchanged():
 
     assert response.status_code == 200
     optimal = response.json()["optimal_state"]
-    assert optimal == {"board": board, "tiles_used_from_rack": 0, "remaining_rack": []}
+    assert optimal == {"board": board, "tiles_used_from_rack": 0, "remaining_rack": [], "solution_steps": []}
     assert GameState(**response.json()["original_state"]) == GameState(board=board, rack=[])
