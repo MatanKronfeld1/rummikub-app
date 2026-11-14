@@ -168,3 +168,17 @@ python tools/autolabel.py --input new_photos `
 
 Approve or correct only uncertain examples, add them to the source dataset,
 then rebuild and retrain. Do not evaluate on images that have entered training.
+
+To correct the boxes in Roboflow, zip the batch with
+`tools/make_roboflow_upload.py` (photos kept for testing go in `--split test`),
+fix the boxes there and export YOLOv8 with auto-orient only (no resize). Then
+sort the tiles into class folders, fix the folders by hand, and write the
+reviewed classes back as 53-class labels:
+
+```powershell
+python tools/review_crops.py sort --export datasets/new_photos/batch2_corrected --out autolabeled/batch2_review
+python tools/review_crops.py collect --review autolabeled/batch2_review --out datasets/new_photos/batch2_labeled
+```
+
+The export's test split ends up in `holdout/`, apart from `train/`. `train/` is
+a `--source` for `tools/make_classifier_dataset.py`.

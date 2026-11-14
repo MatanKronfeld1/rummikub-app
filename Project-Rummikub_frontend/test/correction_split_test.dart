@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -5,6 +6,25 @@ import 'package:rummikub_assistant/models/models.dart';
 import 'package:rummikub_assistant/providers/game_provider.dart';
 import 'package:rummikub_assistant/screens/correction_screen.dart';
 import 'package:rummikub_assistant/widgets/rummikub_tiles.dart';
+
+TestGesture? _mouse;
+
+/// Moves one mouse pointer (added on first use, removed after the test) over
+/// [target]; a second pointer per test would trip the mouse tracker.
+Future<void> hover(WidgetTester tester, Finder target) async {
+  var mouse = _mouse;
+  if (mouse == null) {
+    final added = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await added.addPointer(location: Offset.zero);
+    addTearDown(() async {
+      await added.removePointer();
+      _mouse = null;
+    });
+    mouse = _mouse = added;
+  }
+  await mouse.moveTo(tester.getCenter(target));
+  await tester.pump();
+}
 
 void main() {
   Tile tile(String id, String color, int value) =>
@@ -16,9 +36,9 @@ void main() {
   Future<void> pumpCard(
     WidgetTester tester,
     TileSet tileSet, {
-    ValueChanged<int>? onSplitAt,
+    ValueChanged<int>? onSplitAfter,
     VoidCallback? onAutoSplit,
-    ValueChanged<int>? onInsertAt,
+    bool readOnly = false,
   }) {
     return tester.pumpWidget(
       MaterialApp(
@@ -26,14 +46,23 @@ void main() {
           body: BoardSetCard(
             setIndex: 0,
             tileSet: tileSet,
-            onSplitAt: onSplitAt,
+            onSplitAfter: onSplitAfter,
             onAutoSplit: onAutoSplit,
-            onInsertAt: onInsertAt,
+            readOnly: readOnly,
           ),
         ),
       ),
     );
   }
+
+  test('canSplitAfter allows every tile except the last', () {
+    expect(canSplitAfter(0, 3), isTrue);
+    expect(canSplitAfter(1, 3), isTrue);
+    expect(canSplitAfter(2, 3), isFalse);
+    // A single tile has nothing to move right.
+    expect(canSplitAfter(0, 1), isFalse);
+    expect(canSplitAfter(0, 0), isFalse);
+  });
 
   group('BoardSetCard split controls', () {
     final tiles = [
@@ -42,25 +71,60 @@ void main() {
       tile('c', 'BLACK', 3),
     ];
 
-    testWidgets('shows a scissors button between each pair of tiles',
-        (tester) async {
-      final cuts = <int>[];
-      await pumpCard(tester, set('INVALID', tiles), onSplitAt: cuts.add);
+    testWidgets('no scissors sit between tiles', (tester) async {
+      await pumpCard(tester, set('INVALID', tiles), onSplitAfter: (_) {});
 
-      expect(find.byIcon(Icons.content_cut), findsNWidgets(2));
-      await tester.tap(find.byIcon(Icons.content_cut).last);
-      expect(cuts, [2]);
+      expect(find.byIcon(Icons.content_cut), findsNothing);
     });
 
-    testWidgets('hides scissors while a tile is being placed', (tester) async {
+    testWidgets('hovering a tile offers a cut after it', (tester) async {
+      final cuts = <int>[];
+      await pumpCard(tester, set('INVALID', tiles), onSplitAfter: cuts.add);
+
+      await hover(tester, find.text('9'));
+      expect(find.byKey(const Key('tile_split')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('tile_split')));
+
+      expect(cuts, [1]);
+    });
+
+    testWidgets('the first tile can split, the last cannot', (tester) async {
+      final cuts = <int>[];
+      await pumpCard(tester, set('INVALID', tiles), onSplitAfter: cuts.add);
+
+      await hover(tester, find.text('1'));
+      await tester.tap(find.byKey(const Key('tile_split')));
+      expect(cuts, [0]);
+
+      await hover(tester, find.text('3'));
+      expect(find.byKey(const Key('tile_split')), findsNothing);
+    });
+
+    testWidgets('a one-tile set has no scissors', (tester) async {
+      await pumpCard(
+        tester,
+        set('INVALID', [tile('a', 'RED', 1)]),
+        onSplitAfter: (_) {},
+      );
+
+      await hover(tester, find.text('1'));
+      expect(find.byKey(const Key('tile_split')), findsNothing);
+    });
+
+    testWidgets('read-only cards and cards without a callback have none',
+        (tester) async {
+      await pumpCard(tester, set('INVALID', tiles));
+      await hover(tester, find.text('1'));
+      expect(find.byKey(const Key('tile_split')), findsNothing);
+
       await pumpCard(
         tester,
         set('INVALID', tiles),
-        onSplitAt: (_) {},
-        onInsertAt: (_) {},
+        onSplitAfter: (_) {},
+        readOnly: true,
       );
-
-      expect(find.byIcon(Icons.content_cut), findsNothing);
+      await hover(tester, find.text('1'));
+      expect(find.byKey(const Key('tile_split')), findsNothing);
     });
 
     testWidgets('shows Auto-split only when given a callback', (tester) async {
@@ -90,7 +154,12 @@ void main() {
       return provider;
     }
 
-    testWidgets('one scissors tap splits an over-merged set', (tester) async {
+    List<List<String>> boardIds(GameProvider provider) => [
+          for (final s in provider.gameState.board)
+            [for (final t in s.tiles) t.id],
+        ];
+
+    testWidgets('✂ on a tile leaves it in the left set', (tester) async {
       final provider = await pumpScreen(
         tester,
         set('INVALID', [
@@ -103,18 +172,60 @@ void main() {
       );
 
       expect(find.text('Auto-split'), findsNothing);
-      await tester.tap(find.byIcon(Icons.content_cut).at(2));
+      await hover(tester, find.text('6'));
+      await tester.tap(find.byKey(const Key('tile_split')));
       await tester.pump();
 
-      expect(
-        provider.gameState.board
-            .map((s) => s.tiles.map((t) => t.id).toList())
-            .toList(),
-        [
-          ['a', 'b', 'c'],
-          ['d', 'e'],
-        ],
+      expect(boardIds(provider), [
+        ['a', 'b', 'c'],
+        ['d', 'e'],
+      ]);
+    });
+
+    testWidgets('valid sets can be split too', (tester) async {
+      final provider = await pumpScreen(
+        tester,
+        set('RUN', [
+          tile('r1', 'RED', 1),
+          tile('r2', 'RED', 2),
+          tile('r3', 'RED', 3),
+          tile('r4', 'RED', 4),
+        ]),
       );
+
+      await hover(tester, find.text('2'));
+      await tester.tap(find.byKey(const Key('tile_split')));
+      await tester.pump();
+
+      expect(boardIds(provider), [
+        ['r1', 'r2'],
+        ['r3', 'r4'],
+      ]);
+    });
+
+    testWidgets('splitting clears the selection', (tester) async {
+      final provider = await pumpScreen(
+        tester,
+        set('INVALID', [
+          tile('a', 'RED', 1),
+          tile('b', 'RED', 2),
+          tile('c', 'RED', 3),
+        ]),
+      );
+
+      // A selected tile shows its actions without hover.
+      await tester.tap(find.text('2'));
+      await tester.pump();
+      expect(find.byKey(const Key('tile_edit')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('tile_split')));
+      await tester.pump();
+
+      expect(boardIds(provider), [
+        ['a', 'b'],
+        ['c'],
+      ]);
+      expect(find.byKey(const Key('tile_edit')), findsNothing);
     });
 
     testWidgets('Auto-split cuts a run and group apart', (tester) async {
@@ -137,10 +248,9 @@ void main() {
         provider.gameState.board.map((s) => s.type),
         ['RUN', 'GROUP'],
       );
-      expect(find.byIcon(Icons.content_cut), findsNothing);
     });
 
-    testWidgets('valid sets show no split controls', (tester) async {
+    testWidgets('valid sets show no Auto-split', (tester) async {
       await pumpScreen(
         tester,
         set('RUN', [
@@ -150,7 +260,6 @@ void main() {
         ]),
       );
 
-      expect(find.byIcon(Icons.content_cut), findsNothing);
       expect(find.text('Auto-split'), findsNothing);
     });
   });

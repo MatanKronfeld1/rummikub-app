@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../models/models.dart';
 
+import 'tile_widget.dart';
+
+export 'tile_edit_dialog.dart';
+
 const kTileColors = ['RED', 'BLUE', 'BLACK', 'YELLOW', 'JOKER'];
 
 Color colorForTile(String color) {
@@ -82,12 +86,10 @@ class EmptySlot extends StatelessWidget {
     super.key,
     required this.label,
     this.onTap,
-    this.compact = false,
   });
 
   final String label;
   final VoidCallback? onTap;
-  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -99,7 +101,7 @@ class EmptySlot extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
         child: SizedBox(
-          width: compact ? 28 : 48,
+          width: 48,
           height: 64,
           child: Center(
             child: Text(
@@ -116,6 +118,13 @@ class EmptySlot extends StatelessWidget {
   }
 }
 
+/// Whether the tile at [index] of a set with [tileCount] tiles can cut the set
+/// right after itself.
+///
+/// The cut keeps the tile on the left, so every tile can split except the
+/// last: nothing would move right. That also rules out a one-tile set.
+bool canSplitAfter(int index, int tileCount) => index < tileCount - 1;
+
 class BoardSetCard extends StatelessWidget {
   const BoardSetCard({
     super.key,
@@ -124,9 +133,11 @@ class BoardSetCard extends StatelessWidget {
     this.selectedTileId,
     this.highlightedTileIds = const {},
     this.onTileTap,
-    this.onInsertAt,
-    this.onSplitAt,
+    this.onTileEdited,
+    this.onTileDeleted,
+    this.onSplitAfter,
     this.onAutoSplit,
+    this.onUniteWithNext,
     this.readOnly = false,
   });
 
@@ -135,14 +146,20 @@ class BoardSetCard extends StatelessWidget {
   final String? selectedTileId;
   final Set<String> highlightedTileIds;
   final ValueChanged<Tile>? onTileTap;
-  final ValueChanged<int>? onInsertAt;
 
-  /// Shows a scissors button between tiles (when not inserting); the value is
-  /// the index of the first tile of the new set.
-  final ValueChanged<int>? onSplitAt;
+  /// Give each tile Edit / Delete buttons (shown on hover or selection).
+  final void Function(Tile original, Tile updated)? onTileEdited;
+  final ValueChanged<Tile>? onTileDeleted;
+
+  /// Gives tiles a scissors button (see [canSplitAfter]); the value is the
+  /// index of the tile that stays last in this set.
+  final ValueChanged<int>? onSplitAfter;
 
   /// Shows an "Auto-split" button in the header.
   final VoidCallback? onAutoSplit;
+
+  /// Shows a button under the tiles that joins this set with the one below.
+  final VoidCallback? onUniteWithNext;
   final bool readOnly;
 
   @override
@@ -190,6 +207,17 @@ class BoardSetCard extends StatelessWidget {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: _setChildren(),
             ),
+            if (!readOnly && onUniteWithNext != null)
+              Align(
+                child: IconButton(
+                  key: const Key('set_unite'),
+                  tooltip: 'Unite with set below',
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 20,
+                  icon: const Icon(Icons.call_merge),
+                  onPressed: onUniteWithNext,
+                ),
+              ),
           ],
         ),
       ),
@@ -198,55 +226,26 @@ class BoardSetCard extends StatelessWidget {
 
   List<Widget> _setChildren() {
     final tiles = tileSet.tiles;
-    final views = <Widget>[];
-    final canInsert = !readOnly && onInsertAt != null;
-
-    if (canInsert) {
-      views.add(
-        EmptySlot(
-          label: '+',
-          compact: true,
-          onTap: () => onInsertAt!(0),
+    return [
+      for (var i = 0; i < tiles.length; i++)
+        TileWidget(
+          tile: tiles[i],
+          selected: tiles[i].id == selectedTileId,
+          highlighted: highlightedTileIds.contains(tiles[i].id),
+          onTap: onTileTap == null ? null : () => onTileTap!(tiles[i]),
+          onEdit: readOnly || onTileEdited == null
+              ? null
+              : (updated) => onTileEdited!(tiles[i], updated),
+          onDelete: readOnly || onTileDeleted == null
+              ? null
+              : () => onTileDeleted!(tiles[i]),
+          onSplit: readOnly ||
+                  onSplitAfter == null ||
+                  !canSplitAfter(i, tiles.length)
+              ? null
+              : () => onSplitAfter!(i),
         ),
-      );
-    }
-
-    for (var i = 0; i < tiles.length; i++) {
-      final tile = tiles[i];
-      views.add(
-        TileView(
-          tile: tile,
-          selected: tile.id == selectedTileId,
-          highlighted: highlightedTileIds.contains(tile.id),
-          onTap: onTileTap == null ? null : () => onTileTap!(tile),
-        ),
-      );
-      if (!readOnly &&
-          !canInsert &&
-          onSplitAt != null &&
-          i < tiles.length - 1) {
-        views.add(
-          IconButton(
-            tooltip: 'Split here',
-            visualDensity: VisualDensity.compact,
-            iconSize: 16,
-            onPressed: () => onSplitAt!(i + 1),
-            icon: const Icon(Icons.content_cut),
-          ),
-        );
-      }
-      if (canInsert) {
-        views.add(
-          EmptySlot(
-            label: '+',
-            compact: true,
-            onTap: () => onInsertAt!(i + 1),
-          ),
-        );
-      }
-    }
-
-    return views;
+    ];
   }
 }
 
@@ -341,133 +340,6 @@ class GameBoardView extends StatelessWidget {
                 )
                 .toList(),
           ),
-      ],
-    );
-  }
-}
-
-class TileEditResult {
-  const TileEditResult.save({required this.color, required this.value})
-      : delete = false;
-
-  const TileEditResult.delete()
-      : delete = true,
-        color = 'RED',
-        value = 1;
-
-  final bool delete;
-  final String color;
-  final int value;
-}
-
-class TileEditDialog extends StatefulWidget {
-  const TileEditDialog({
-    super.key,
-    this.tile,
-    this.allowDelete = true,
-  });
-
-  final Tile? tile;
-  final bool allowDelete;
-
-  @override
-  State<TileEditDialog> createState() => _TileEditDialogState();
-}
-
-class _TileEditDialogState extends State<TileEditDialog> {
-  late String _color;
-  late int _value;
-
-  @override
-  void initState() {
-    super.initState();
-    _color = widget.tile?.color ?? 'RED';
-    _value = widget.tile?.value ?? 1;
-  }
-
-  void _onColorChanged(String? color) {
-    if (color == null) return;
-    setState(() {
-      _color = color;
-      if (color == 'JOKER') {
-        _value = 0;
-      } else if (_value < 1 || _value > 13) {
-        _value = 1;
-      }
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isJoker = _color == 'JOKER';
-    final isNew = widget.tile == null;
-
-    return AlertDialog(
-      title: Text(isNew ? 'Add tile' : 'Edit tile'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          DropdownButtonFormField<String>(
-            initialValue: _color,
-            decoration: const InputDecoration(labelText: 'Color'),
-            items: kTileColors
-                .map(
-                  (color) => DropdownMenuItem(
-                    value: color,
-                    child: Text(color),
-                  ),
-                )
-                .toList(),
-            onChanged: _onColorChanged,
-          ),
-          const SizedBox(height: 12),
-          DropdownButtonFormField<int>(
-            key: ValueKey(_color),
-            initialValue: isJoker ? 0 : _value,
-            decoration: const InputDecoration(labelText: 'Value'),
-            items: isJoker
-                ? const [
-                    DropdownMenuItem(value: 0, child: Text('0 (Joker)')),
-                  ]
-                : List.generate(
-                    13,
-                    (i) => DropdownMenuItem(
-                      value: i + 1,
-                      child: Text('${i + 1}'),
-                    ),
-                  ),
-            onChanged: isJoker
-                ? null
-                : (value) {
-                    if (value == null) return;
-                    setState(() => _value = value);
-                  },
-          ),
-        ],
-      ),
-      actions: [
-        if (widget.allowDelete && !isNew)
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop(const TileEditResult.delete());
-            },
-            style: TextButton.styleFrom(
-              foregroundColor: Theme.of(context).colorScheme.error,
-            ),
-            child: const Text('Delete'),
-          ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () {
-            Navigator.of(context).pop(
-              TileEditResult.save(color: _color, value: _value),
-            );
-          },
-          child: Text(isNew ? 'Add' : 'Save'),
-        ),
       ],
     );
   }

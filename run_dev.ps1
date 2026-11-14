@@ -6,6 +6,7 @@ Dev loop with hot reload, from the repo root:
     .\run_dev.ps1 -Device web-server   # no browser launched; open http://localhost:5000
                                        # yourself (e.g. in incognito), -WebPort to change
     .\run_dev.ps1 -HostAddress 192.168.1.20   # a phone on the same Wi-Fi
+    .\run_dev.ps1 -Classifier classify\best.pt -Detector detect\best.pt   # the earlier models
 
 Starts uvicorn with --reload in a second window (Python edits restart it by
 itself), waits until it answers, then runs `flutter run` in this window so the
@@ -23,6 +24,10 @@ param(
     [int]$WebPort = 5000,
     # Address the app uses to reach the backend; set it for a phone/LAN device.
     [string]$HostAddress = '127.0.0.1',
+    # Vision weights, relative to the repo root. The defaults are the retrained
+    # pair; the earlier models are classify\best.pt and detect\best.pt.
+    [string]$Classifier = 'classify_v2\last.pt',
+    [string]$Detector = 'runs\detect_v2\last.pt',
     # Print what would run instead of starting the backend and the app.
     [switch]$DryRun
 )
@@ -30,14 +35,14 @@ $ErrorActionPreference = 'Stop'
 
 $backend = Join-Path $PSScriptRoot 'project_rummikub_backend'
 $frontend = Join-Path $PSScriptRoot 'Project-Rummikub_frontend'
-$classifier = Join-Path $PSScriptRoot 'classify\best.pt'
-$detector = Join-Path $PSScriptRoot 'detect\best.pt'
+$classifier = if ([IO.Path]::IsPathRooted($Classifier)) { $Classifier } else { Join-Path $PSScriptRoot $Classifier }
+$detector = if ([IO.Path]::IsPathRooted($Detector)) { $Detector } else { Join-Path $PSScriptRoot $Detector }
 
 # Same vision selection as run_demo.ps1; the backend window inherits these.
 if ((Test-Path $classifier) -and (Test-Path $detector)) {
     $env:CLS_WEIGHTS = $classifier
     $env:DETECTOR_WEIGHTS = $detector
-    Write-Host 'Vision: local detector + classifier (no Roboflow key needed).'
+    Write-Host "Vision: local detector + classifier (no Roboflow key needed).`n  detector:   $detector`n  classifier: $classifier"
 } elseif ($env:ROBOFLOW_API_KEY) {
     Write-Host 'Vision: forwarded to the Roboflow Workflow with ROBOFLOW_API_KEY from this shell.'
 } else {

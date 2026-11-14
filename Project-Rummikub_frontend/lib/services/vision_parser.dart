@@ -25,7 +25,8 @@ class TileDetection {
   final String color;
   final int value;
 
-  Tile toTile() => Tile(color: color, value: value);
+  Tile toTile({int? rackRow}) =>
+      Tile(color: color, value: value, rackRow: rackRow);
 
   String get shortLabel => color == 'JOKER' ? 'J' : '$value';
 }
@@ -222,9 +223,11 @@ class VisionParser {
     if (disableSpatialGrouping) {
       return [for (final detection in detections) detection.toTile()];
     }
-    return _clusterRows(detections)
-        .expand((row) => row.map((d) => d.toTile()))
-        .toList();
+    final shelves = _rackShelves(detections);
+    return [
+      for (var shelf = 0; shelf < shelves.length; shelf++)
+        for (final d in shelves[shelf]) d.toTile(rackRow: shelf),
+    ];
   }
 
   static List<Map<String, dynamic>> _outputEntries(dynamic decoded) {
@@ -322,26 +325,92 @@ class VisionParser {
     return false;
   }
 
-  /// Row-based clustering; used for rack photos (upright, horizontal rows).
-  static List<List<TileDetection>> _clusterRows(
-      List<TileDetection> detections) {
-    final sorted = [...detections]..sort((a, b) => a.y.compareTo(b.y));
-    final avgHeight =
-        sorted.fold<double>(0, (sum, d) => sum + d.height) / sorted.length;
-    final threshold = avgHeight * 0.6;
+  /// A new shelf starts where tiles are this many tile heights apart across
+  /// the shelves. Measured on real rack photos: the gap between the two shelves
+  /// is 0.8-1.05 tile heights, spacing inside a shelf at most 0.35.
+  static const double _shelfGapRatio = 0.5;
 
-    final rows = <List<TileDetection>>[];
-    for (final detection in sorted) {
-      if (rows.isEmpty || (detection.y - rows.last.last.y).abs() > threshold) {
-        rows.add([detection]);
+  /// Rack photos are held by hand and shot at an angle, so shelves are rarely
+  /// level and their y ranges overlap: grouping by y alone merges them into
+  /// one row or shreds them. Instead the photo is straightened first, using
+  /// the direction along the shelves ([_rackTilt]), then cut across them.
+  ///
+  /// Returns at most two shelves (a real rack has two), top first, each read
+  /// left to right along the shelf. Detections that sit apart from both main
+  /// shelves (a stray box on the background) join the nearest one.
+  static List<List<TileDetection>> _rackShelves(
+    List<TileDetection> detections,
+  ) {
+    final tilt = _rackTilt(detections);
+    final cosT = math.cos(tilt);
+    final sinT = math.sin(tilt);
+    // u runs along the shelves, v across them.
+    double u(TileDetection d) => d.x * cosT + d.y * sinT;
+    double v(TileDetection d) => d.y * cosT - d.x * sinT;
+
+    final byV = [...detections]..sort((a, b) => v(a).compareTo(v(b)));
+    final gap = _median([for (final d in detections) d.height]) * _shelfGapRatio;
+    final clusters = <List<TileDetection>>[
+      [byV.first],
+    ];
+    for (final d in byV.skip(1)) {
+      if (v(d) - v(clusters.last.last) > gap) {
+        clusters.add([d]);
       } else {
-        rows.last.add(detection);
+        clusters.last.add(d);
       }
     }
-    for (final row in rows) {
-      row.sort((a, b) => a.x.compareTo(b.x));
+
+    var shelves = clusters;
+    if (clusters.length > 2) {
+      double meanV(List<TileDetection> c) =>
+          c.fold<double>(0, (sum, d) => sum + v(d)) / c.length;
+      final bySize = [for (var i = 0; i < clusters.length; i++) i]..sort((a, b) {
+          final bySize = clusters[b].length.compareTo(clusters[a].length);
+          return bySize != 0 ? bySize : a.compareTo(b);
+        });
+      final anchors = [bySize[0], bySize[1]]..sort();
+      shelves = [for (final i in anchors) [...clusters[i]]];
+      for (var i = 0; i < clusters.length; i++) {
+        if (anchors.contains(i)) continue;
+        final nearest = (meanV(clusters[i]) - meanV(shelves[0])).abs() <=
+                (meanV(clusters[i]) - meanV(shelves[1])).abs()
+            ? 0
+            : 1;
+        shelves[nearest].addAll(clusters[i]);
+      }
     }
-    return rows;
+    for (final shelf in shelves) {
+      shelf.sort((a, b) => u(a).compareTo(u(b)));
+    }
+    return shelves;
+  }
+
+  /// Angle (radians) of the shelves against the image's x axis: the median
+  /// direction from each tile to its nearest neighbour on its right, within a
+  /// 30 degree cone. The cone keeps out the tiles of the other shelf, which
+  /// are often the nearest ones overall. Zero when there are too few pairs.
+  static double _rackTilt(List<TileDetection> detections) {
+    const cone = math.pi / 6;
+    final angles = <double>[];
+    for (final a in detections) {
+      double? bestDist;
+      double? bestAngle;
+      for (final b in detections) {
+        final dx = b.x - a.x;
+        if (dx <= 0) continue;
+        final dy = b.y - a.y;
+        final angle = math.atan2(dy, dx);
+        if (angle.abs() > cone) continue;
+        final dist = math.sqrt(dx * dx + dy * dy);
+        if (bestDist == null || dist < bestDist) {
+          bestDist = dist;
+          bestAngle = angle;
+        }
+      }
+      if (bestAngle != null) angles.add(bestAngle);
+    }
+    return angles.length >= 3 ? _median(angles) : 0;
   }
 
   // ---------------------------------------------------------------------

@@ -16,8 +16,11 @@ The script:
 
 Vision setup:
 
-- If `classify\best.pt` and `detect\best.pt` exist, the backend runs the local
-  detector and classifier, and **no Roboflow key is needed**.
+- If the vision weights exist, the backend runs the local detector and
+  classifier, and **no Roboflow key is needed**. `run_demo.ps1` and
+  `run_dev.ps1` use the retrained pair by default (`-Classifier
+  classify_v2\last.pt`, `-Detector runs\detect_v2\last.pt`); pass
+  `-Classifier classify\best.pt -Detector detect\best.pt` for the earlier models.
 - Otherwise, set `$env:ROBOFLOW_API_KEY` in the same shell first; the backend
   then forwards recognition to the Roboflow Workflow.
 

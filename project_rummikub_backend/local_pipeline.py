@@ -56,7 +56,7 @@ CLS_SIZE = _TILE_CROPS.CLS_SIZE if _TILE_CROPS else 224
 _MARGIN_PER_SIDE = _TILE_CROPS.MARGIN_PER_SIDE if _TILE_CROPS else 0.05
 
 DET_SIZE = 1024
-DET_CONF = 0.25
+DET_CONF = 0.35
 # Total enlargement added by the Roboflow "Detection Offset" step (10 % total,
 # 5 % per side).  Kept here only for the output box scaling so that the
 # coordinates returned to vision_grouping.py match the old workflow's output.
