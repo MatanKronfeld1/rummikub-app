@@ -14,12 +14,17 @@ import '../services/file_download.dart';
 import '../services/firebase_service.dart';
 import '../services/roboflow_debug_dump.dart';
 import '../services/vision_parser.dart';
+import '../widgets/rack_widget.dart';
 import '../widgets/rummikub_tiles.dart';
+import '../widgets/tile_picker_popover.dart';
+import '../widgets/tile_widget.dart';
 import 'result_screen.dart';
 
-/// Human-in-the-loop editor: tap a tile, then tap a + slot to move it.
+/// Human-in-the-loop editor: tap a tile, then tap a set's move icon (or the
+/// Rack slot) to move it.
 ///
-/// Tap the same tile again to edit or delete. Invalid sets get a red border.
+/// Tiles are edited or deleted with their own buttons, not by tapping them.
+/// Invalid sets get a red border.
 class CorrectionScreen extends StatefulWidget {
   const CorrectionScreen({super.key, this.arenaChallenge});
 
@@ -55,8 +60,9 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
     try {
       final game = context.read<GameProvider>();
       final userId = _currentUserId();
-      final turn =
-          userId == null ? null : await game.recordTurn(userId, state: currentState);
+      final turn = userId == null
+          ? null
+          : await game.recordTurn(userId, state: currentState);
       final result = await game.api.solveBoard(
         currentState,
         sessionId: turn?.sessionId,
@@ -178,9 +184,11 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
     return text.startsWith(prefix) ? text.substring(prefix.length) : text;
   }
 
+  /// Selects [tile]; tapping the selected tile again deselects it. Editing
+  /// goes through the tile's own Edit button, never a tap.
   void _onTileTap(Tile tile, {String? setId}) {
     if (_selectedTileId == tile.id && _selectedSetId == setId) {
-      _openEditDialog(tile, setId: setId);
+      _clearSelection();
       return;
     }
     setState(() {
@@ -196,25 +204,6 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
           fromSetId: _selectedSetId,
           destination: destination,
         );
-    _clearSelection();
-  }
-
-  Future<void> _openEditDialog(Tile tile, {String? setId}) async {
-    final result = await showDialog<TileEditResult>(
-      context: context,
-      builder: (context) => TileEditDialog(tile: tile),
-    );
-    if (!mounted || result == null) return;
-    final provider = context.read<GameProvider>();
-    if (result.delete) {
-      provider.deleteTile(tile, setId: setId);
-    } else {
-      provider.replaceTile(
-        tile,
-        tile.copyWith(color: result.color, value: result.value),
-        setId: setId,
-      );
-    }
     _clearSelection();
   }
 
@@ -275,11 +264,11 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
         final canSubmit = !groupingOff && boardValid && hasTiles && !_isBusy;
         final hint = groupingOff
             ? (_hasSelection
-                ? 'Tap a selected tile again to edit or delete it. Grouping is off — these are raw detections.'
-                : 'Raw detections with no series grouping. Tap a tile to select it, then tap it again to edit.')
+                ? 'Use the selected tile\'s edit or delete button, or tap it again to deselect. Grouping is off — these are raw detections.'
+                : 'Raw detections with no series grouping. Tap a tile to select it, then use its edit or delete button.')
             : (_hasSelection
-                ? 'Tap + to the left or right of any tile to place it, or tap it again to edit.'
-                : 'Tap a tile to select it, then tap + on either side of a tile to place it. Tap ✂ between tiles to split a red set.');
+                ? 'Tap the move icon on a set (or the Rack slot) to place the tile, or tap it again to deselect.'
+                : 'Tap a tile to select it, then tap the move icon on a set to place it. Hover a tile for edit, delete and ✂ (split the set after it); the merge icon under a set unites it with the next one.');
 
         return Stack(
           children: [
@@ -396,65 +385,103 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
                         ],
                       ),
                   ] else ...[
-                    SectionHeader(
-                      title: 'Board',
-                      subtitle: '${gameState.numberOfSets} sets',
+                    Row(
+                      children: [
+                        Expanded(
+                          child: SectionHeader(
+                            title: 'Board',
+                            subtitle: '${gameState.numberOfSets} sets',
+                          ),
+                        ),
+                        IconButton(
+                          key: const Key('add_set'),
+                          tooltip: 'New set',
+                          icon: const Icon(Icons.add_circle),
+                          onPressed: () => gameProvider.addSetToBoard(
+                            TileSet(type: 'INVALID', tiles: []),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     if (gameState.isBoardEmpty)
                       const Padding(
                         padding: EdgeInsets.symmetric(vertical: 8),
                         child: Text(
-                          'No sets on the board. Add a new set below.',
+                          'No sets on the board. Tap + above to add a new set.',
                         ),
                       )
                     else
                       ...gameState.board.asMap().entries.map((entry) {
                         final set = entry.value;
-                        return BoardSetCard(
-                          setIndex: entry.key,
-                          tileSet: set,
-                          selectedTileId: _selectedTileId,
-                          onTileTap: (tile) => _onTileTap(tile, setId: set.id),
-                          onInsertAt: _hasSelection
-                              ? (index) => _onDrop(
+                        final isLast =
+                            entry.key == gameState.board.length - 1;
+                        return _SetWithToolbar(
+                          onDelete: () =>
+                              gameProvider.removeSetFromBoard(set.id),
+                          onTilesAdded: (tiles) =>
+                              gameProvider.updateSetOnBoard(
+                            set.id,
+                            set.copyWith(tiles: [...set.tiles, ...tiles]),
+                          ),
+                          onMoveHere: _hasSelection
+                              ? () => _onDrop(
                                     TileDestination.insertIntoSet(
                                       set.id,
-                                      index,
+                                      set.tiles.length,
                                     ),
                                   )
                               : null,
-                          onSplitAt: !_hasSelection &&
-                                  set.isInvalid &&
-                                  set.tiles.length > 1
-                              ? (index) => gameProvider.splitSet(set.id, index)
-                              : null,
-                          onAutoSplit: !_hasSelection &&
-                                  set.isInvalid &&
-                                  (SetValidator.splitIntoValidSets(set.tiles)
-                                              ?.length ??
-                                          0) >
-                                      1
-                              ? () => gameProvider.autoSplitSet(set.id)
-                              : null,
+                          child: BoardSetCard(
+                            setIndex: entry.key,
+                            tileSet: set,
+                            selectedTileId: _selectedTileId,
+                            onTileTap: (tile) =>
+                                _onTileTap(tile, setId: set.id),
+                            onTileEdited: (original, updated) =>
+                                gameProvider.replaceTile(
+                              original,
+                              updated,
+                              setId: set.id,
+                            ),
+                            onTileDeleted: (tile) =>
+                                gameProvider.deleteTile(tile, setId: set.id),
+                            onSplitAfter: (index) {
+                              gameProvider.splitSet(set.id, index + 1);
+                              _clearSelection();
+                            },
+                            onUniteWithNext: isLast
+                                ? null
+                                : () {
+                                    gameProvider.mergeWithNextSet(set.id);
+                                    _clearSelection();
+                                  },
+                            onAutoSplit: !_hasSelection &&
+                                    set.isInvalid &&
+                                    (SetValidator.splitIntoValidSets(set.tiles)
+                                                ?.length ??
+                                            0) >
+                                        1
+                                ? () => gameProvider.autoSplitSet(set.id)
+                                : null,
+                          ),
                         );
                       }),
-                    const SizedBox(height: 8),
-                    _DropZone(
-                      label: 'New set',
-                      enabled: _hasSelection,
-                      onTap: () => _onDrop(TileDestination.newSet),
-                    ),
                     const SizedBox(height: 24),
-                    SectionHeader(
-                      title: 'Rack',
-                      subtitle: '${gameState.rackSize} tiles',
-                    ),
-                    const SizedBox(height: 8),
-                    _ungroupedTileWrap(
-                      tiles: [
-                        for (final tile in gameState.rack) (tile, null),
-                      ],
+                    RackWidget(
+                      tiles: gameState.rack,
+                      selectedTileId:
+                          _selectedSetId == null ? _selectedTileId : null,
+                      onTileTap: _onTileTap,
+                      onTileEdited: (original, updated) =>
+                          gameProvider.replaceTile(original, updated),
+                      onTileDeleted: (tile) => gameProvider.deleteTile(tile),
+                      onClear: () => gameProvider.updateRack(const []),
+                      onTilesAdded: (tiles) {
+                        for (final tile in tiles) {
+                          gameProvider.addTileToRack(tile);
+                        }
+                      },
                       extra: EmptySlot(
                         label: _hasSelection ? 'Rack' : '+',
                         onTap: _hasSelection
@@ -503,11 +530,21 @@ class _CorrectionScreenState extends State<CorrectionScreen> {
       runSpacing: 8,
       children: [
         for (final entry in tiles)
-          TileView(
+          TileWidget(
             tile: entry.$1,
             selected:
                 entry.$1.id == _selectedTileId && _selectedSetId == entry.$2,
             onTap: () => _onTileTap(entry.$1, setId: entry.$2),
+            onEdit: (updated) {
+              context
+                  .read<GameProvider>()
+                  .replaceTile(entry.$1, updated, setId: entry.$2);
+              _clearSelection();
+            },
+            onDelete: () {
+              context.read<GameProvider>().deleteTile(entry.$1, setId: entry.$2);
+              _clearSelection();
+            },
           ),
         if (extra != null) extra,
       ],
@@ -676,38 +713,60 @@ class _RawDetectionMapState extends State<_RawDetectionMap> {
   }
 }
 
-class _DropZone extends StatelessWidget {
-  const _DropZone({
-    required this.label,
-    required this.enabled,
-    required this.onTap,
+/// A board set with a row above it holding the delete, add-tiles `+` and,
+/// while a tile is selected, move-here buttons.
+class _SetWithToolbar extends StatelessWidget {
+  const _SetWithToolbar({
+    required this.onTilesAdded,
+    required this.onDelete,
+    required this.child,
+    this.onMoveHere,
   });
 
-  final String label;
-  final bool enabled;
-  final VoidCallback onTap;
+  final ValueChanged<List<Tile>> onTilesAdded;
+  final VoidCallback onDelete;
+  final Widget child;
+
+  /// Set only while a tile is selected: the tap-to-move target for this set.
+  final VoidCallback? onMoveHere;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Material(
-      color: enabled
-          ? theme.colorScheme.primaryContainer
-          : theme.colorScheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        onTap: enabled ? onTap : null,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          child: Center(
-            child: Text(
-              label,
-              style: theme.textTheme.labelLarge,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            if (onMoveHere != null)
+              IconButton(
+                key: const Key('set_move_here'),
+                tooltip: 'Move selected tile here',
+                visualDensity: VisualDensity.compact,
+                iconSize: 20,
+                style: IconButton.styleFrom(
+                  backgroundColor:
+                      Theme.of(context).colorScheme.primaryContainer,
+                ),
+                icon: const Icon(Icons.move_down),
+                onPressed: onMoveHere,
+              ),
+            IconButton(
+              key: const Key('set_delete'),
+              tooltip: 'Delete set',
+              visualDensity: VisualDensity.compact,
+              iconSize: 20,
+              icon: const Icon(Icons.delete_outline),
+              onPressed: onDelete,
             ),
-          ),
+            TilePickerButton(
+              onTilesSelected: onTilesAdded,
+              tooltip: 'Add tiles to set',
+            ),
+          ],
         ),
-      ),
+        child,
+      ],
     );
   }
 }

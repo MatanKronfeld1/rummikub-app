@@ -1,6 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import '../logic/set_validator.dart';
 import '../models/models.dart';
+import '../models/rummikub_tiles.dart';
 import '../services/api_service.dart';
 import '../services/roboflow_debug_dump.dart';
 
@@ -34,7 +37,15 @@ class GameProvider extends ChangeNotifier {
 
   void _commit(GameState next) {
     final boardCleared = _gameState.board.isNotEmpty && next.board.isEmpty;
-    _gameState = SetValidator.classifyGameState(next);
+    // The rack keeps the order the tiles were detected, added or moved in,
+    // and each tile its shelf: from the photo, else where it was before.
+    final rows = {
+      for (final tile in _gameState.rack)
+        if (tile.rackRow != null) tile.id: tile.rackRow!,
+    };
+    _gameState = SetValidator.classifyGameState(
+      next.copyWith(rack: withRackRows(next.rack, previous: rows)),
+    );
     if (boardCleared) _closeSession();
     notifyListeners();
   }
@@ -135,15 +146,44 @@ class GameProvider extends ChangeNotifier {
   }
 
   void updateSetOnBoard(String setId, TileSet updatedSet) {
-    _commit(_gameState.updateSetOnBoard(setId, updatedSet));
+    _commit(_gameState.updateSetOnBoard(
+      setId,
+      updatedSet.copyWith(tiles: sortSetTiles(updatedSet.tiles)),
+    ));
   }
 
-  /// Replaces set [setId] with [replacement], in place on the board.
-  void _spliceSet(String setId, List<TileSet> replacement) {
+  /// Replaces [replaces] consecutive sets starting at [setId] with
+  /// [replacement], in place on the board.
+  void _spliceSet(
+    String setId,
+    List<TileSet> replacement, {
+    int replaces = 1,
+  }) {
+    final board = _gameState.board;
+    final at = board.indexWhere((s) => s.id == setId);
+    if (at < 0) return;
     _commit(_gameState.copyWith(board: [
-      for (final set in _gameState.board)
-        if (set.id == setId) ...replacement else set,
+      ...board.sublist(0, at),
+      ...replacement,
+      ...board.sublist(math.min(at + replaces, board.length)),
     ]));
+  }
+
+  /// Joins set [setId] with the set below it. The result keeps [setId]'s slot
+  /// and id; its tiles are sorted unless one side is empty, which has nothing
+  /// to merge and so keeps the other side's order. Does nothing for the last set.
+  void mergeWithNextSet(String setId) {
+    final board = _gameState.board;
+    final at = board.indexWhere((s) => s.id == setId);
+    if (at < 0 || at == board.length - 1) return;
+    final first = board[at];
+    final tiles = [...first.tiles, ...board[at + 1].tiles];
+    final oneSideEmpty = first.isEmpty || board[at + 1].isEmpty;
+    _spliceSet(
+      setId,
+      [first.copyWith(tiles: oneSideEmpty ? tiles : sortSetTiles(tiles))],
+      replaces: 2,
+    );
   }
 
   /// Cuts set [setId] before tile [index]; the tail becomes the next set.
@@ -182,7 +222,10 @@ class GameProvider extends ChangeNotifier {
     final newTiles = set.tiles
         .map((tile) => tile.id == original.id ? updated : tile)
         .toList();
-    _commit(_gameState.updateSetOnBoard(setId, set.copyWith(tiles: newTiles)));
+    _commit(_gameState.updateSetOnBoard(
+      setId,
+      set.copyWith(tiles: sortSetTiles(newTiles)),
+    ));
   }
 
   void deleteTile(Tile tile, {String? setId}) {
@@ -196,7 +239,10 @@ class GameProvider extends ChangeNotifier {
       _commit(_gameState.removeSetFromBoard(setId));
     } else {
       _commit(
-        _gameState.updateSetOnBoard(setId, set.copyWith(tiles: newTiles)),
+        _gameState.updateSetOnBoard(
+          setId,
+          set.copyWith(tiles: sortSetTiles(newTiles)),
+        ),
       );
     }
   }
@@ -306,7 +352,9 @@ class GameProvider extends ChangeNotifier {
       final tiles = [...set.tiles];
       final clamped = index.clamp(0, tiles.length);
       tiles.insert(clamped, tile);
-      return set.copyWith(tiles: tiles);
+      // Like every other edit: a tile dropped at the end of a run still lands
+      // in order. Sets with a joker keep the position the tile was given.
+      return set.copyWith(tiles: sortSetTiles(tiles));
     }).toList();
     if (found) return next;
     return [

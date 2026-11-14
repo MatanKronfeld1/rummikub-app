@@ -9,10 +9,16 @@ class Tile {
   final String color;
   final int value;
 
+  /// Which shelf of the rack this tile sits on (0 top, 1 bottom), taken from
+  /// the rack photo. Layout only: it is not serialized and not part of
+  /// equality, so the solver and Firestore shapes stay as they are.
+  final int? rackRow;
+
   Tile({
     String? id,
     required this.color,
     required this.value,
+    this.rackRow,
   }) : id = id ?? const Uuid().v4();
 
   /// Creates a Tile from JSON map
@@ -69,11 +75,13 @@ class Tile {
     String? id,
     String? color,
     int? value,
+    int? rackRow,
   }) {
     return Tile(
       id: id ?? this.id,
       color: color ?? this.color,
       value: value ?? this.value,
+      rackRow: rackRow ?? this.rackRow,
     );
   }
 

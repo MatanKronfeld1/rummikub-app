@@ -32,6 +32,7 @@ detect/
 # Local datasets, photos, archives, and model weights.
 your_dataset/
 backgrounds/
+new_photos/
 *.zip
 *.pt
 

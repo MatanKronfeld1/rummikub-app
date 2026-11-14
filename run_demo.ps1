@@ -4,10 +4,12 @@ Local demo in one command, from the repo root:
     .\run_demo.ps1                     # backend + Flutter web app in Chrome
     .\run_demo.ps1 -Device windows     # any `flutter devices` id
     .\run_demo.ps1 -Lan                # a phone on the same Wi-Fi
+    .\run_demo.ps1 -Classifier classify\best.pt -Detector detect\best.pt   # the earlier models
 
 Starts the FastAPI backend (solver + vision proxy) in a second window, waits
-until it answers, then runs the Flutter app against it. With classify\best.pt
-and detect\best.pt present, vision runs locally and needs no Roboflow key;
+until it answers, then runs the Flutter app against it. With the vision weights
+present (-Classifier / -Detector, default classify_v2\last.pt and
+runs\detect_v2\last.pt), vision runs locally and needs no Roboflow key;
 otherwise set $env:ROBOFLOW_API_KEY in this shell first. See DEMO.md.
 
 -Lan makes the backend listen on the network and points the app at this PC's
@@ -19,6 +21,10 @@ param(
     [string]$Device = 'chrome',
     [switch]$Lan,
     [string]$HostAddress = '',
+    # Vision weights, relative to the repo root. The defaults are the retrained
+    # pair; the earlier models are classify\best.pt and detect\best.pt.
+    [string]$Classifier = 'classify_v2\last.pt',
+    [string]$Detector = 'runs\detect_v2\last.pt',
     # Print what would run instead of starting the backend and the app.
     [switch]$DryRun
 )
@@ -26,8 +32,8 @@ $ErrorActionPreference = 'Stop'
 
 $backend = Join-Path $PSScriptRoot 'project_rummikub_backend'
 $frontend = Join-Path $PSScriptRoot 'Project-Rummikub_frontend'
-$classifier = Join-Path $PSScriptRoot 'classify\best.pt'
-$detector = Join-Path $PSScriptRoot 'detect\best.pt'
+$classifier = if ([IO.Path]::IsPathRooted($Classifier)) { $Classifier } else { Join-Path $PSScriptRoot $Classifier }
+$detector = if ([IO.Path]::IsPathRooted($Detector)) { $Detector } else { Join-Path $PSScriptRoot $Detector }
 
 # -Lan: the app has to talk to this PC's network address, and uvicorn has to
 # accept connections from other devices (it binds 127.0.0.1 by default).
@@ -46,7 +52,7 @@ $appHost = if ($HostAddress) { $HostAddress } else { '127.0.0.1' }
 $visionEnv = ''
 if ((Test-Path $classifier) -and (Test-Path $detector)) {
     $visionEnv = "`$env:CLS_WEIGHTS = '$classifier'; `$env:DETECTOR_WEIGHTS = '$detector'; "
-    Write-Host 'Vision: local detector + classifier (no Roboflow key needed).'
+    Write-Host "Vision: local detector + classifier (no Roboflow key needed).`n  detector:   $detector`n  classifier: $classifier"
 } elseif ($env:ROBOFLOW_API_KEY) {
     Write-Host 'Vision: forwarded to the Roboflow Workflow with ROBOFLOW_API_KEY from this shell.'
 } else {
